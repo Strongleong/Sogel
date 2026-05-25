@@ -102,14 +102,19 @@
 
 typedef struct Object Object;
 typedef void(ObjectUpdateFn)(Object *obj);
+typedef void(ObjectDrawFn)(Object *obj);
 
 struct Object {
   uint16_t        x;
   uint16_t        y;
-  uint32_t        update_ms;
-  uint64_t        last_update;
   ObjectUpdateFn *update;
+  ObjectUpdateFn *draw;
 };
+
+typedef struct SogelTimer {
+  uint32_t interval_ms;
+  uint64_t last_time;
+} SogelTimer;
 
 // Configuration
 SOGEL_DEF void     sogel_set_fps(uint32_t fps);
@@ -127,10 +132,11 @@ SOGEL_DEF char    *sogel_at(uint16_t x, uint16_t y);
 // Object management
 SOGEL_DEF void     sogel_add_object(Object *obj);
 // Game loop
-SOGEL_DEF bool     sogel_update(uint64_t now_ms);
+SOGEL_DEF void     sogel_tick(uint64_t now_ms);
 SOGEL_DEF uint64_t sogel_get_time_ms(void);
 SOGEL_DEF void     sogel_sleep_us(uint64_t microseconds);
 SOGEL_DEF void     sogel_render(void);
+SOGEL_DEF bool     sogel_timer_elapsed(SogelTimer *t);
 // Event system
 SOGEL_DEF void     sogel_setup_input(void);
 SOGEL_DEF void     sogel_poll_events(void);
@@ -176,7 +182,6 @@ static bool           sogel_termios_saved = false;
 static void sogel_terminal_restore(void) {
   if (sogel_termios_saved) {
     tcsetattr(STDIN_FILENO, TCSANOW, &sogel_orig_termios);
-    SOGEL_LOG_DEBUG("Terminal settings are restored");
   }
 }
 
@@ -285,22 +290,25 @@ SOGEL_DEF void sogel_add_object(Object *obj) {
   }
 }
 
-SOGEL_DEF bool sogel_update(uint64_t now_ms) {
-  bool changed = false;
+SOGEL_DEF void sogel_tick(uint64_t now_ms) {
+  (void)now_ms;
 
   for (size_t i = 0; i < sogel_objects_count; i++) {
     Object *obj = sogel_objects[i];
-    SOGEL_ASSERT(obj->update != NULL, "Object update function must not be NULL");
+    SOGEL_ASSERT(obj != NULL, "Object must not be NULL");
 
-    if (now_ms - obj->last_update >= obj->update_ms) {
+    if (obj->update) {
       obj->update(obj);
-      obj->last_update = now_ms;
-      changed          = true;
+      SOGEL_LOG_TRACE("Object %zu update() called", i);
+    }
+
+    if (obj->draw) {
+      obj->draw(obj);
+      SOGEL_LOG_TRACE("Object %zu draw() triggered", i);
     }
   }
 
-  SOGEL_LOG_TRACE("Update: %zu objects processed, changed=%d", sogel_objects_count, changed);
-  return changed;
+  SOGEL_LOG_TRACE("Tick: %zu objects", sogel_objects_count);
 }
 
 // Platform-specific
@@ -346,6 +354,17 @@ SOGEL_DEF void sogel_render(void) {
 #else
 #error "sogel_render" is not implemented for your platform yet
 #endif
+}
+
+SOGEL_DEF bool sogel_timer_elapsed(SogelTimer *t) {
+  uint64_t now_ms = sogel_get_time_ms();
+
+  if (now_ms - t->last_time >= t->interval_ms) {
+    t->last_time = now_ms;
+    return true;
+  }
+
+  return false;
 }
 
 SOGEL_DEF void sogel_setup_input(void) {
