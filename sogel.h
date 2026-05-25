@@ -65,6 +65,7 @@
 #define SOGEL_KEY_ESC   27
 #define SOGEL_KEY_SPACE ' '
 #define SOGEL_KEY_ENTER '\n'
+// TODO: Fill up this
 #else
 #error "Keycodes only Unix+Term are supported"
 #endif
