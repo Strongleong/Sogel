@@ -38,10 +38,6 @@
 #define SOGEL_MAX_OBJECTS 1024
 #endif
 
-#ifndef SOGEL_MAX_KEY
-#define SOGEL_MAX_KEY 512
-#endif
-
 #define SOGEL_BACKEND_TERMINAL 0
 
 #ifndef SOGEL_BACKEND
@@ -162,6 +158,8 @@ static char sogel_buffer[SOGEL_MAX_WIDTH * SOGEL_MAX_HEIGHT + 1];
 
 static Object *sogel_objects[SOGEL_MAX_OBJECTS];
 static size_t  sogel_objects_count = 0;
+
+#define SOGEL_MAX_KEY 512
 
 static bool     sogel_keys_curr[SOGEL_MAX_KEY] = {0};
 static bool     sogel_keys_prev[SOGEL_MAX_KEY] = {0};
