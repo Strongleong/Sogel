@@ -1,2 +1,2 @@
-tetris: tetris.c
-	clang -Wall -Wextra -o tetris tetris.c -fsanitize=address -ggdb
+game: game.c
+	clang -Wall -Wextra -o game game.c -fsanitize=address -ggdb

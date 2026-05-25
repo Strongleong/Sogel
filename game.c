@@ -13,7 +13,7 @@
 static FILE *log_file = NULL;
 
 void setup_logcie(void) {
-  log_file = fopen("tetris.log", "w");
+  log_file = fopen("game.log", "w");
 
   if (!log_file) {
     LOGCIE_ERROR("Cold not open log file: %s", strerror(errno));
