@@ -164,12 +164,19 @@ int main(void) {
   sogel_set_fps(60);
   sogel_hide_cursor();
   sogel_clear_term();
+  sogel_setup_input();
 
   sogel_add_object(&scrolling_text.header);
   sogel_add_object(&counter.header);
   sogel_add_object(&man_hello.header);
 
   while (run) {
+    sogel_poll_events();
+
+    if (sogel_is_key_pressed(SOGEL_KEY_ESC)) {
+      run = false;
+    }
+
     uint64_t now = sogel_get_time_ms();
 
     if (sogel_update(now)) {
