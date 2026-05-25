@@ -23,7 +23,7 @@ void setup_logcie(void) {
   static Logcie_Sink sink = {
     .formatter = {logcie_printf_formatter, "[$L] $m"},
     .writer    = {logcie_printf_writer, NULL},
-    .filter    = logcie_filter_level_max(LOGCIE_LEVEL_VERBOSE),
+    .filter    = logcie_filter_level_min(LOGCIE_LEVEL_VERBOSE),
   };
 
   sink.writer.data = log_file;
@@ -226,10 +226,8 @@ int main(void) {
       run = false;
     }
 
-    uint64_t now = sogel_get_time_ms();
-
     sogel_clear();
-    sogel_tick(now);
+    sogel_tick();
     sogel_render();
 
     sogel_sleep_us(sogel_get_frame_delay_us());

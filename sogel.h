@@ -132,7 +132,7 @@ SOGEL_DEF char    *sogel_at(uint16_t x, uint16_t y);
 // Object management
 SOGEL_DEF void     sogel_add_object(Object *obj);
 // Game loop
-SOGEL_DEF void     sogel_tick(uint64_t now_ms);
+SOGEL_DEF void     sogel_tick(void);
 SOGEL_DEF uint64_t sogel_get_time_ms(void);
 SOGEL_DEF void     sogel_sleep_us(uint64_t microseconds);
 SOGEL_DEF void     sogel_render(void);
@@ -290,9 +290,7 @@ SOGEL_DEF void sogel_add_object(Object *obj) {
   }
 }
 
-SOGEL_DEF void sogel_tick(uint64_t now_ms) {
-  (void)now_ms;
-
+SOGEL_DEF void sogel_tick(void) {
   for (size_t i = 0; i < sogel_objects_count; i++) {
     Object *obj = sogel_objects[i];
     SOGEL_ASSERT(obj != NULL, "Object must not be NULL");
