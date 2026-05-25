@@ -1,0 +1,9 @@
+FallbackFlags:
+  - -std=c99
+  - -I.
+Format:
+  Style: file
+If:
+  PathMatch: ['sogel.h']
+CompileFlags:
+  Add: [-DSOGEL_IMPLEMENTATION]
