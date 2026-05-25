@@ -3,11 +3,11 @@
 #include <stdbool.h>
 #include <unistd.h>
 
-#define SOGEL_IMPLEMENTATION
-#include "sogel.h"
-
 #define LOGCIE_IMPLEMENTATION
 #include "./deps/logcie.h"
+
+#define SOGEL_IMPLEMENTATION
+#include "sogel.h"
 
 static FILE *log_file = NULL;
 
@@ -22,7 +22,7 @@ void setup_logcie(void) {
   static Logcie_Sink sink = {
     .formatter = {logcie_printf_formatter, "[$L] $m"},
     .writer    = {logcie_printf_writer, NULL},
-    .filter    = logcie_filter_level_min(LOGCIE_LEVEL_DEBUG),
+    .filter    = logcie_filter_level_max(LOGCIE_LEVEL_VERBOSE),
   };
 
   sink.writer.data = log_file;
@@ -163,7 +163,7 @@ int main(void) {
   sogel_set_size(60, 40);
   sogel_set_fps(60);
   sogel_hide_cursor();
-  printf(SOGEL_ANSI_CLEAR_SCREEN);
+  sogel_clear_term();
 
   sogel_add_object(&scrolling_text.header);
   sogel_add_object(&counter.header);
