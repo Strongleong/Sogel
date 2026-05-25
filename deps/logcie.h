@@ -816,7 +816,7 @@ typedef uint8_t(Logcie_FilterCustomPredicateFn)(Logcie_Log *log);
 #define logcie_filter_level_max(level)    \
   ((Logcie_Filter){                       \
     .filter = logcie_filter_level_max_fn, \
-    .data   = &(Logcie_LogLevel){(level)} \
+    .data   = (void *)(level) \
   })
 
 #define logcie_filter_module_eq(module)   \
