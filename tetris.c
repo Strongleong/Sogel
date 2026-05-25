@@ -173,6 +173,15 @@ int main(void) {
   while (run) {
     sogel_poll_events();
 
+    // TODO: Move this into the object. Decouple animation timings with control timings
+    if (sogel_is_key_pressed(SOGEL_KEY_LEFT) && man_hello.header.x > 0) {
+      man_hello.header.x--;
+    }
+
+    if (sogel_is_key_pressed(SOGEL_KEY_RIGHT) && man_hello.header.x < sogel_get_width() - 5) {
+      man_hello.header.x++;
+    }
+
     if (sogel_is_key_pressed(SOGEL_KEY_ESC)) {
       run = false;
     }
