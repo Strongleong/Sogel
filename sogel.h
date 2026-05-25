@@ -54,14 +54,85 @@
 #endif
 
 #if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL
-#define SOGEL_KEY_UP    256
-#define SOGEL_KEY_DOWN  257
-#define SOGEL_KEY_LEFT  258
-#define SOGEL_KEY_RIGHT 259
-#define SOGEL_KEY_ESC   27
-#define SOGEL_KEY_SPACE ' '
-#define SOGEL_KEY_ENTER '\n'
-// TODO: Fill up this
+#define SOGEL_KEY_UP           256
+#define SOGEL_KEY_DOWN         257
+#define SOGEL_KEY_LEFT         258
+#define SOGEL_KEY_RIGHT        259
+#define SOGEL_KEY_ESC          27
+#define SOGEL_KEY_SPACE        ' '
+#define SOGEL_KEY_ENTER        '\n'
+#define SOGEL_KEY_BACKSPACE    8
+#define SOGEL_KEY_TAB          9
+#define SOGEL_KEY_RETURN       13
+#define SOGEL_KEY_A            'A'
+#define SOGEL_KEY_B            'B'
+#define SOGEL_KEY_C            'C'
+#define SOGEL_KEY_D            'D'
+#define SOGEL_KEY_E            'E'
+#define SOGEL_KEY_F            'F'
+#define SOGEL_KEY_G            'G'
+#define SOGEL_KEY_H            'H'
+#define SOGEL_KEY_I            'I'
+#define SOGEL_KEY_J            'J'
+#define SOGEL_KEY_K            'K'
+#define SOGEL_KEY_L            'L'
+#define SOGEL_KEY_M            'M'
+#define SOGEL_KEY_N            'N'
+#define SOGEL_KEY_O            'O'
+#define SOGEL_KEY_P            'P'
+#define SOGEL_KEY_Q            'Q'
+#define SOGEL_KEY_R            'R'
+#define SOGEL_KEY_S            'S'
+#define SOGEL_KEY_T            'T'
+#define SOGEL_KEY_U            'U'
+#define SOGEL_KEY_V            'V'
+#define SOGEL_KEY_W            'W'
+#define SOGEL_KEY_X            'X'
+#define SOGEL_KEY_Y            'Y'
+#define SOGEL_KEY_Z            'Z'
+#define SOGEL_KEY_0            '0'
+#define SOGEL_KEY_1            '1'
+#define SOGEL_KEY_2            '2'
+#define SOGEL_KEY_3            '3'
+#define SOGEL_KEY_4            '4'
+#define SOGEL_KEY_5            '5'
+#define SOGEL_KEY_6            '6'
+#define SOGEL_KEY_7            '7'
+#define SOGEL_KEY_8            '8'
+#define SOGEL_KEY_9            '9'
+#define SOGEL_KEY_SPACE        ' '
+#define SOGEL_KEY_EXCLAIM      '!'
+#define SOGEL_KEY_QUOTE        '"'
+#define SOGEL_KEY_HASH         '#'
+#define SOGEL_KEY_DOLLAR       '$'
+#define SOGEL_KEY_PERCENT      '%'
+#define SOGEL_KEY_AMPERSAND    '&'
+#define SOGEL_KEY_SINGLEQUOTE  '\''
+#define SOGEL_KEY_LEFTPAREN    '('
+#define SOGEL_KEY_RIGHTPAREN   ')'
+#define SOGEL_KEY_ASTERISK     '*'
+#define SOGEL_KEY_PLUS         '+'
+#define SOGEL_KEY_COMMA        ','
+#define SOGEL_KEY_MINUS        '-'
+#define SOGEL_KEY_DOT          '.'
+#define SOGEL_KEY_SLASH        '/'
+#define SOGEL_KEY_COLON        ':'
+#define SOGEL_KEY_SEMICOLON    ';'
+#define SOGEL_KEY_LESS         '<'
+#define SOGEL_KEY_EQUAL        '='
+#define SOGEL_KEY_GREATER      '>'
+#define SOGEL_KEY_QUESTION     '?'
+#define SOGEL_KEY_AT           '@'
+#define SOGEL_KEY_LEFTBRACKET  '['
+#define SOGEL_KEY_RIGHTBRACKET ']'
+#define SOGEL_KEY_BACKSLASH    '\\'
+#define SOGEL_KEY_CARET        '^'
+#define SOGEL_KEY_UNDERSCORE   '_'
+#define SOGEL_KEY_BACKQUOTE    '`'
+#define SOGEL_KEY_LEFTBRACE    '{'
+#define SOGEL_KEY_RIGHTBRACE   '}'
+#define SOGEL_KEY_PIPE         '|'
+#define SOGEL_KEY_TILDE        '~'
 #else
 #error "Keycodes only Unix+Term are supported"
 #endif
@@ -101,8 +172,8 @@
 #endif
 
 typedef struct Object Object;
-typedef void(ObjectUpdateFn)(Object *obj);
-typedef void(ObjectDrawFn)(Object *obj);
+typedef void(ObjectUpdateFn)(Object *obj, uint64_t delta_ms);
+typedef void(ObjectDrawFn)(Object *obj, uint64_t delta_ms);
 
 struct Object {
   uint16_t        x;
@@ -159,6 +230,7 @@ static uint16_t sogel_width          = 80;
 static uint16_t sogel_height         = 24;
 static uint32_t sogel_fps            = 60;
 static uint64_t sogel_frame_delay_us = 16667;
+static uint64_t sogel_last_tick      = 0;
 
 static char sogel_buffer[SOGEL_MAX_WIDTH * SOGEL_MAX_HEIGHT + 1];
 
@@ -265,7 +337,7 @@ SOGEL_DEF void sogel_show_cursor(void) {
 SOGEL_DEF void sogel_clear(void) {
   memset(sogel_buffer, ' ', (size_t)sogel_width * sogel_height);
   sogel_buffer[sogel_width * sogel_height] = '\0';
-  SOGEL_LOG_VERBOSE("Buffer cleared (%ux%u)", sogel_width, sogel_height);
+  SOGEL_LOG_TRACE("Buffer cleared (%ux%u)", sogel_width, sogel_height);
 }
 
 SOGEL_DEF void sogel_clear_term(void) {
@@ -291,17 +363,21 @@ SOGEL_DEF void sogel_add_object(Object *obj) {
 }
 
 SOGEL_DEF void sogel_tick(void) {
+  uint64_t now      = sogel_get_time_ms();
+  uint64_t delta_ms = now - sogel_last_tick;
+  sogel_last_tick   = now;
+
   for (size_t i = 0; i < sogel_objects_count; i++) {
     Object *obj = sogel_objects[i];
     SOGEL_ASSERT(obj != NULL, "Object must not be NULL");
 
     if (obj->update) {
-      obj->update(obj);
+      obj->update(obj, delta_ms);
       SOGEL_LOG_TRACE("Object %zu update() called", i);
     }
 
     if (obj->draw) {
-      obj->draw(obj);
+      obj->draw(obj, delta_ms);
       SOGEL_LOG_TRACE("Object %zu draw() triggered", i);
     }
   }
@@ -371,6 +447,9 @@ SOGEL_DEF void sogel_setup_input(void) {
 #else
 #error "sogel_setup_input" is now implemented for your platform yet
 #endif
+
+  sogel_last_tick = sogel_get_time_ms();
+  SOGEL_LOG_DEBUG("Tick clock initialised");
 }
 
 SOGEL_DEF void sogel_poll_events(void) {

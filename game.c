@@ -40,8 +40,9 @@ typedef struct ManHello {
   SogelTimer anim_timer;
 } ManHello;
 
-void update_man_hello(Object *obj) {
+void update_man_hello(Object *obj, uint64_t delta_ms) {
   ManHello *this = (ManHello *)obj;
+  (void)delta_ms;
 
   if (sogel_is_key_down(SOGEL_KEY_LEFT) && this->header.x > 0) {
     this->header.x--;
@@ -60,8 +61,9 @@ void update_man_hello(Object *obj) {
   }
 }
 
-void draw_man_hello(Object *obj) {
+void draw_man_hello(Object *obj, uint64_t delta_ms) {
   ManHello *this = (ManHello *)obj;
+  (void)delta_ms;
 
   static const char *man[4][3] = {
     {
@@ -117,8 +119,9 @@ typedef struct ScrollingText {
   SogelTimer  scroll_timer;
 } ScrollingText;
 
-void draw_scrolling_text(Object *obj) {
+void draw_scrolling_text(Object *obj, uint64_t delta_ms) {
   ScrollingText *this = (ScrollingText *)obj;
+  (void)delta_ms;
 
   if (sogel_timer_elapsed(&this->scroll_timer)) {
     this->offset = (this->offset + 1) % strlen(this->text);
@@ -157,8 +160,9 @@ typedef struct Counter {
   SogelTimer  inc_timer;
 } Counter;
 
-void draw_counter(Object *obj) {
+void draw_counter(Object *obj, uint64_t delta_ms) {
   Counter *this = (Counter *)obj;
+  (void)delta_ms;
 
   if (sogel_timer_elapsed(&this->inc_timer)) {
     this->counter++;
@@ -182,9 +186,81 @@ static Counter counter = {
 
 // ==============================
 
-void draw_help_text(Object *obj) {
-  const char *text = "Press Esc to quit. Use <UP>, <DOWN>, <LEFT> and <RIGHT> keys to control the waving man";
-  snprintf(sogel_at(obj->x, obj->y), strlen(text) + 2, "%s", text);
+typedef struct {
+  Object header;
+  float  x_sub;
+  float  y_sub;
+  float  speed_x;
+  float  speed_y;
+  bool   use_delta;
+} Ball;
+
+void update_ball(Object *obj, uint64_t delta_ms) {
+  Ball *this = (Ball *)obj;
+
+  float delta_sec = delta_ms / 1000.0f;
+
+  if (this->use_delta) {
+    this->x_sub += this->speed_x * delta_sec;
+    this->y_sub += this->speed_y * delta_sec;
+  } else {
+    this->x_sub += this->speed_x;
+    this->y_sub += this->speed_y;
+  }
+
+  if (this->x_sub < 0) {
+    this->x_sub   = 0;
+    this->speed_x = -this->speed_x;
+  } else if (this->x_sub > sogel_get_width() - 1) {
+    this->x_sub   = sogel_get_width() - 1.0f;
+    this->speed_x = -this->speed_x;
+  }
+
+  if (this->y_sub < 0) {
+    this->y_sub   = 0;
+    this->speed_y = -this->speed_y;
+  } else if (this->y_sub > sogel_get_height() - 1) {
+    this->y_sub   = sogel_get_height() - 1.0f;
+    this->speed_y = -this->speed_y;
+  }
+
+  this->header.x = (uint16_t)this->x_sub;
+  this->header.y = (uint16_t)this->y_sub;
+
+  if (sogel_is_key_down(SOGEL_KEY_SPACE)) {
+    this->use_delta = !this->use_delta;
+  }
+}
+
+void draw_ball(Object *obj, uint64_t delta_ms) {
+  Ball *this = (Ball *)obj;
+  (void)delta_ms;
+
+  *sogel_at(this->header.x, this->header.y) = 'O';
+}
+
+static Ball ball = {
+  .header = {
+    .x      = 10,
+    .y      = 10,
+    .update = update_ball,
+    .draw   = draw_ball,
+  },
+  .x_sub     = 10.0f,
+  .y_sub     = 10.0f,
+  .speed_x   = 15.0f,
+  .speed_y   = 8.0f,
+  .use_delta = true,
+};
+
+// ==============================
+
+void draw_help_text(Object *obj, uint64_t delta_ms) {
+  (void)delta_ms;
+  const char *text =
+    "Press Esc to quit. Use <UP>, <DOWN>, <LEFT> and <RIGHT> keys to control the waving man."
+    "Ball uses delts: ";
+  snprintf(sogel_at(obj->x, obj->y), strlen(text) + 6, "%s%s", text, ball.use_delta ? "yes" : "no");
 }
 
 static Object help_text = {
@@ -215,6 +291,7 @@ int main(void) {
   sogel_setup_input();
 
   sogel_add_object(&help_text);
+  sogel_add_object(&ball.header);
   sogel_add_object(&scrolling_text.header);
   sogel_add_object(&counter.header);
   sogel_add_object(&man_hello.header);
