@@ -53,6 +53,7 @@
 #error "Only Unix+Term is supported"
 #endif
 
+// NOTE: For now for terminal backend there is no difference between lowercase and uppercase letters
 #if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL
 #define SOGEL_KEY_UP           256
 #define SOGEL_KEY_DOWN         257
