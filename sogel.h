@@ -17,6 +17,7 @@
 #if defined(__linux__) || defined(__unix__) || defined(__APPLE__)
 #define SOGEL_PLATFORM_UNIX
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #elif defined(_WIN32)
 #error "Windows is not supported for now"
@@ -38,6 +39,18 @@
 #define SOGEL_MAX_OBJECTS 1024
 #endif
 
+#ifndef SOGEL_MAX_EVENTS
+#define SOGEL_MAX_EVENTS 256
+#endif
+
+#ifndef SOGEL_INPUT_BUFFER_SIZE
+#define SOGEL_INPUT_BUFFER_SIZE 32
+#endif
+
+#ifndef SOGEL_RESIZE_DEBOUNCE_MS
+#define SOGEL_RESIZE_DEBOUNCE_MS 50
+#endif
+
 #define SOGEL_BACKEND_TERMINAL 0
 
 #ifndef SOGEL_BACKEND
@@ -45,10 +58,19 @@
 #endif
 
 #if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL
-#define SOGEL_ANSI_CLEAR_SCREEN "\033[2J"
-#define SOGEL_ANSI_HOME         "\033[H"
-#define SOGEL_ANSI_CURSOR_HIDE  "\033[?25l"
-#define SOGEL_ANSI_CURSOR_SHOW  "\033[?25h"
+#define SOGEL_ANSI_CLEAR_SCREEN    "\033[2J"
+#define SOGEL_ANSI_HOME            "\033[H"
+#define SOGEL_ANSI_CURSOR_HIDE     "\033[?25l"
+#define SOGEL_ANSI_CURSOR_SHOW     "\033[?25h"
+#define SOGEL_ANSI_MOUSE_TRACK_ON  "\033[?1003h"
+#define SOGEL_ANSI_MOUSE_TRACK_OFF "\033[?1003l"
+#define SOGEL_ANSI_SGR_ON          "\033[?1006h"
+#define SOGEL_ANSI_SGR_OFF         "\033[?1006l"
+#define SOGEL_ANSI_ESC             27
+#define SOGEL_ANSI_CSI             '['
+#define SOGEL_ANSI_MOUSE_PREFIX    '<'
+#define SOGEL_ANSI_MOUSE_PRESS     'M'
+#define SOGEL_ANSI_MOUSE_RELEASE   'm'
 #else
 #error "Only Unix+Term is supported"
 #endif
@@ -60,7 +82,6 @@
 #define SOGEL_KEY_LEFT         258
 #define SOGEL_KEY_RIGHT        259
 #define SOGEL_KEY_ESC          27
-#define SOGEL_KEY_SPACE        ' '
 #define SOGEL_KEY_ENTER        '\n'
 #define SOGEL_KEY_BACKSPACE    8
 #define SOGEL_KEY_TAB          9
@@ -134,6 +155,9 @@
 #define SOGEL_KEY_RIGHTBRACE   '}'
 #define SOGEL_KEY_PIPE         '|'
 #define SOGEL_KEY_TILDE        '~'
+#define SOGEL_MOUSE_LEFT       1
+#define SOGEL_MOUSE_RIGHT      2
+#define SOGEL_MOUSE_MIDDLE     3
 #else
 #error "Keycodes only Unix+Term are supported"
 #endif
@@ -180,7 +204,7 @@ struct Object {
   uint16_t        x;
   uint16_t        y;
   ObjectUpdateFn *update;
-  ObjectUpdateFn *draw;
+  ObjectDrawFn   *draw;
 };
 
 typedef struct SogelTimer {
@@ -188,6 +212,55 @@ typedef struct SogelTimer {
   uint64_t last_time;
 } SogelTimer;
 
+typedef enum SogelEventType {
+  SOGEL_EVENT_NONE = 0,
+
+  SOGEL_EVENT_QUIT,
+  SOGEL_EVENT_RESIZE,
+
+  SOGEL_EVENT_KEY_DOWN,
+  SOGEL_EVENT_KEY_UP,
+
+  SOGEL_EVENT_CHAR,
+
+  SOGEL_EVENT_MOUSE_MOVE,
+  SOGEL_EVENT_MOUSE_DOWN,
+  SOGEL_EVENT_MOUSE_UP,
+  SOGEL_EVENT_MOUSE_SCROLL,
+
+  SOGEL_EVENT_USER = 100,
+} SogelEventType;
+
+typedef struct SogelEvent {
+  SogelEventType type;
+
+  union {
+    struct {
+      uint16_t key;
+    } key;
+    struct {
+      uint32_t codepoint;
+    } character;
+    struct {
+      uint16_t width;
+      uint16_t height;
+    } resize;
+    struct {
+      int16_t x;
+      int16_t y;
+      uint8_t button;
+    } mouse;
+    struct {
+      uint32_t code;
+      void    *data1;
+      void    *data2;
+    } user;
+  };
+} SogelEvent;
+
+// Lifecycle
+SOGEL_DEF void     sogel_init(uint16_t width, uint16_t height, uint32_t fps);
+SOGEL_DEF void     sogel_deinit(void);
 // Configuration
 SOGEL_DEF void     sogel_set_fps(uint32_t fps);
 SOGEL_DEF uint32_t sogel_get_fps(void);
@@ -195,33 +268,51 @@ SOGEL_DEF uint64_t sogel_get_frame_delay_us(void);
 SOGEL_DEF void     sogel_set_size(uint16_t width, uint16_t height);
 SOGEL_DEF uint16_t sogel_get_width(void);
 SOGEL_DEF uint16_t sogel_get_height(void);
+// Terminal specific
 SOGEL_DEF void     sogel_hide_cursor(void);
 SOGEL_DEF void     sogel_show_cursor(void);
-// Utility
 SOGEL_DEF void     sogel_clear(void);
+// Drawing buffer
 SOGEL_DEF void     sogel_clear_term(void);
 SOGEL_DEF char    *sogel_at(uint16_t x, uint16_t y);
 // Object management
 SOGEL_DEF void     sogel_add_object(Object *obj);
 // Game loop
-SOGEL_DEF void     sogel_tick(void);
+SOGEL_DEF void     sogel_update(void);
+SOGEL_DEF void     sogel_draw(void);
 SOGEL_DEF uint64_t sogel_get_time_ms(void);
 SOGEL_DEF void     sogel_sleep_us(uint64_t microseconds);
 SOGEL_DEF void     sogel_render(void);
 SOGEL_DEF bool     sogel_timer_elapsed(SogelTimer *t);
 // Event system
-SOGEL_DEF void     sogel_setup_input(void);
 SOGEL_DEF void     sogel_poll_events(void);
+SOGEL_DEF bool     sogel_next_event(SogelEvent *event);
+SOGEL_DEF bool     sogel_push_user_event(uint32_t code, void *data1, void *data2);
 SOGEL_DEF bool     sogel_is_key_down(uint16_t key);
 SOGEL_DEF bool     sogel_is_key_pressed(uint16_t key);
 SOGEL_DEF bool     sogel_is_key_released(uint16_t key);
-SOGEL_DEF uint16_t sogel_get_char(void);
+SOGEL_DEF int16_t  sogel_get_mouse_x(void);
+SOGEL_DEF int16_t  sogel_get_mouse_y(void);
+SOGEL_DEF bool     sogel_is_mouse_down(uint8_t button);
 
 #ifdef SOGEL_IMPLEMENTATION
 
-#include <assert.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef SOGEL_PLATFORM_UNIX
+#include <fcntl.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+
+typedef struct termios TermState;
+#else
+#error Your platfor is not supported yet
+#endif
 
 #ifdef LOGCIE
 static const char *logcie_module = "sogel";
@@ -231,44 +322,90 @@ static uint16_t sogel_width          = 80;
 static uint16_t sogel_height         = 24;
 static uint32_t sogel_fps            = 60;
 static uint64_t sogel_frame_delay_us = 16667;
-static uint64_t sogel_last_tick      = 0;
 
-static char sogel_buffer[SOGEL_MAX_WIDTH * SOGEL_MAX_HEIGHT + 1];
+static char  *sogel_buffer      = NULL;
+static size_t sogel_buffer_size = 0;
 
 static Object *sogel_objects[SOGEL_MAX_OBJECTS];
 static size_t  sogel_objects_count = 0;
 
 #define SOGEL_MAX_KEY 512
+static bool sogel_keys_curr[SOGEL_MAX_KEY] = {0};
+static bool sogel_keys_prev[SOGEL_MAX_KEY] = {0};
 
-static bool     sogel_keys_curr[SOGEL_MAX_KEY] = {0};
-static bool     sogel_keys_prev[SOGEL_MAX_KEY] = {0};
-static uint16_t sogel_last_char                = 0;
+static int16_t sogel_mouse_x          = 0;
+static int16_t sogel_mouse_y          = 0;
+static bool    sogel_mouse_buttons[8] = {0};
 
-#ifdef SOGEL_PLATFORM_UNIX
-#include <fcntl.h>
-#include <stdlib.h>
-#include <termios.h>
+static SogelEvent sogel_events[SOGEL_MAX_EVENTS];
+static uint16_t   sogel_event_head = 0;
+static uint16_t   sogel_event_tail = 0;
 
-static struct termios sogel_orig_termios;
-static bool           sogel_termios_saved = false;
+static uint64_t sogel_last_tick      = 0;
+static uint64_t sogel_frame_delta_ms = 0;
+
+static TermState sogel_orig_termios;
+static bool      sogel_termios_saved = false;
+
+static volatile bool sogel_terminal_resized = false;
+static uint64_t      sogel_last_resize_ms   = 0;
+
+static const char *sogel_event_name(SogelEventType type) {
+  static const char *names[] = {
+    [SOGEL_EVENT_NONE]         = "NONE",
+    [SOGEL_EVENT_QUIT]         = "QUIT",
+    [SOGEL_EVENT_RESIZE]       = "RESIZE",
+    [SOGEL_EVENT_KEY_DOWN]     = "KEY_DOWN",
+    [SOGEL_EVENT_KEY_UP]       = "KEY_UP",
+    [SOGEL_EVENT_CHAR]         = "CHAR",
+    [SOGEL_EVENT_MOUSE_MOVE]   = "MOUSE_MOVE",
+    [SOGEL_EVENT_MOUSE_DOWN]   = "MOUSE_DOWN",
+    [SOGEL_EVENT_MOUSE_UP]     = "MOUSE_UP",
+    [SOGEL_EVENT_MOUSE_SCROLL] = "MOUSE_SCROLL",
+    [SOGEL_EVENT_USER]         = "USER",
+  };
+
+  if (type >= 0 && type < (SogelEventType)(sizeof(names) / sizeof(names[0]))) {
+    return names[type];
+  }
+
+  return "UNKNOWN";
+}
 
 static void sogel_terminal_restore(void) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
   if (sogel_termios_saved) {
     tcsetattr(STDIN_FILENO, TCSANOW, &sogel_orig_termios);
   }
+
+  printf(SOGEL_ANSI_MOUSE_TRACK_OFF);
+  printf(SOGEL_ANSI_SGR_OFF);
+  fflush(stdout);
+
+  free(sogel_buffer);
+  sogel_buffer = NULL;
+#else
+#error "sogel_terminal_restore" is not supported on your platform yet
+#endif
 }
 
 static void sogel_terminal_enable_raw(void) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
   if (!sogel_termios_saved) {
     int32_t rc = tcgetattr(STDIN_FILENO, &sogel_orig_termios);
     SOGEL_ASSERT(rc == 0, "tcgetattr failed – cannot save terminal settings");
     sogel_termios_saved = true;
     atexit(sogel_terminal_restore);
     SOGEL_LOG_DEBUG("Terminal settings are saved");
+
+    printf(SOGEL_ANSI_MOUSE_TRACK_ON);
+    printf(SOGEL_ANSI_SGR_ON);
+    fflush(stdout);
   }
 
   struct termios raw = sogel_orig_termios;
   raw.c_lflag &= ~(ICANON | ECHO);
+
   int32_t rc = tcsetattr(STDIN_FILENO, TCSANOW, &raw);
   SOGEL_ASSERT(rc == 0, "tcgetattr failed – cannot save terminal settings");
 
@@ -277,8 +414,232 @@ static void sogel_terminal_enable_raw(void) {
   fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
   SOGEL_LOG_DEBUG("Raw input mode enabled");
-}
+#else
+#error "sogel_terminal_enable_raw" is not supported on your platform yet
 #endif
+}
+
+static void sogel_sigwinch_handler(int sig) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
+  (void)sig;
+  sogel_terminal_resized = true;
+#else
+#error "sogel_sigwinch_handler" is not supported on your platform yet
+#endif
+}
+
+static bool sogel_push_event(const SogelEvent *event) {
+  uint32_t next = (sogel_event_tail + 1) % SOGEL_MAX_EVENTS;
+
+  if (next == sogel_event_head) {
+    SOGEL_LOG_WARN("Event queue overflow - event dropped");
+    return false;
+  }
+
+  sogel_events[sogel_event_tail] = *event;
+  sogel_event_tail               = next;
+
+  SOGEL_LOG_TRACE("Event pushed: %s", sogel_event_name(event->type));
+  return true;
+}
+
+static void sogel_resize_buffer(uint16_t width, uint16_t height) {
+  size_t new_size   = (size_t)width * height + 1;
+  char  *new_buffer = realloc(sogel_buffer, new_size);
+
+  SOGEL_ASSERT(new_buffer != NULL, "Failed to allocate framebuffer");
+
+  sogel_buffer      = new_buffer;
+  sogel_buffer_size = new_size;
+
+  memset(sogel_buffer, ' ', new_size - 1);
+  sogel_buffer[new_size - 1] = '\0';
+}
+
+static void sogel_update_terminal_size(void) {
+#ifdef SOGEL_PLATFORM_UNIX
+  struct winsize ws;
+
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
+    return;
+  }
+
+  sogel_set_size(ws.ws_col, ws.ws_row);
+
+  SogelEvent e = {
+    .type = SOGEL_EVENT_RESIZE,
+  };
+
+  e.resize.width  = ws.ws_col;
+  e.resize.height = ws.ws_row;
+
+  sogel_push_event(&e);
+#endif
+}
+
+static bool sogel_parse_mouse_event(const uint8_t *buf, int32_t len, int32_t *consumed) {
+  const int32_t min_mouse_len = 6;
+
+  if (len < min_mouse_len) {
+    return false;
+  }
+
+  if (buf[0] != SOGEL_ANSI_ESC || buf[1] != SOGEL_ANSI_CSI || buf[2] != SOGEL_ANSI_MOUSE_PREFIX) {
+    return false;
+  }
+
+  int  b, x, y;
+  char type;
+  int  parsed_bytes = 0;
+
+  int parsed = sscanf((const char *)buf, "\033[<%d;%d;%d%c%n", &b, &x, &y, &type, &parsed_bytes);
+
+  if (parsed != 4) {
+    return false;
+  }
+
+  SogelEvent e = {0};
+
+  const int8_t mouse_motion_mask   = 32;
+  const int8_t mouse_button_mask   = 3;
+  const int8_t mouse_button_offset = 1;
+
+  if ((b & mouse_motion_mask) != 0) {
+    e.type = SOGEL_EVENT_MOUSE_MOVE;
+  } else if (type == SOGEL_ANSI_MOUSE_PRESS) {
+    e.type = SOGEL_EVENT_MOUSE_DOWN;
+  } else {
+    e.type = SOGEL_EVENT_MOUSE_UP;
+  }
+
+  e.mouse.x      = (int16_t)x - 1;
+  e.mouse.y      = (int16_t)y - 1;
+  e.mouse.button = (uint8_t)(b & mouse_button_mask) + mouse_button_offset;
+
+  sogel_mouse_x = e.mouse.x;
+  sogel_mouse_y = e.mouse.y;
+
+  if (e.type == SOGEL_EVENT_MOUSE_DOWN) {
+    sogel_mouse_buttons[e.mouse.button] = true;
+  }
+
+  else if (e.type == SOGEL_EVENT_MOUSE_UP) {
+    sogel_mouse_buttons[e.mouse.button] = false;
+  }
+
+  sogel_push_event(&e);
+  *consumed = parsed_bytes;
+
+  return true;
+}
+
+static bool sogel_parse_arrow_key(const uint8_t *buf, int32_t len, int32_t *consumed) {
+  const int32_t arrow_len = 3;
+
+  if (len < arrow_len) {
+    return false;
+  }
+
+  if (buf[0] != SOGEL_ANSI_ESC || buf[1] != SOGEL_ANSI_CSI) {
+    return false;
+  }
+
+  uint16_t key = 0;
+
+  switch (buf[2]) {
+    case 'A': key = SOGEL_KEY_UP; break;
+    case 'B': key = SOGEL_KEY_DOWN; break;
+    case 'C': key = SOGEL_KEY_RIGHT; break;
+    case 'D': key = SOGEL_KEY_LEFT; break;
+    default:  return false;
+  }
+
+  sogel_keys_curr[key] = true;
+
+  SogelEvent e = {.type = SOGEL_EVENT_KEY_DOWN, .key.key = key};
+  sogel_push_event(&e);
+  *consumed = arrow_len;
+
+  return true;
+}
+
+static void sogel_process_input_buffer(const uint8_t *buf, int32_t n) {
+  for (int32_t i = 0; i < n; i++) {
+    if (
+      buf[i] == SOGEL_ANSI_ESC &&
+      i + 1 < n &&
+      buf[i + 1] == SOGEL_ANSI_CSI
+    ) {
+      int32_t consumed = 0;
+
+      if (
+        sogel_parse_mouse_event(&buf[i], n - i, &consumed) ||
+        sogel_parse_arrow_key(&buf[i], n - i, &consumed)
+      ) {
+        i += consumed - 1;
+        continue;
+      }
+
+      i++;
+      continue;
+    }
+
+    uint16_t ch = buf[i];
+    if (ch < SOGEL_MAX_KEY) {
+      sogel_keys_curr[ch] = true;
+
+      SogelEvent e_down = {.type = SOGEL_EVENT_KEY_DOWN, .key.key = ch};
+      sogel_push_event(&e_down);
+
+      SogelEvent e_char = {.type = SOGEL_EVENT_CHAR, .character.codepoint = ch};
+      sogel_push_event(&e_char);
+    }
+  }
+}
+
+static void sogel_generate_key_up_events(void) {
+  for (uint16_t k = 0; k < SOGEL_MAX_KEY; k++) {
+    if (!sogel_keys_curr[k] && sogel_keys_prev[k]) {
+      SogelEvent e = {.type = SOGEL_EVENT_KEY_UP, .key.key = k};
+      sogel_push_event(&e);
+    }
+  }
+}
+
+SOGEL_DEF void sogel_init(uint16_t width, uint16_t height, uint32_t fps) {
+  sogel_set_fps(fps);
+  sogel_set_size(width, height);
+  SOGEL_LOG_INFO("Sogel initialising (backend %d)", SOGEL_BACKEND);
+
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL
+  sogel_clear_term();
+  sogel_hide_cursor();
+#endif
+
+#ifdef SOGEL_PLATFORM_UNIX
+  sogel_terminal_enable_raw();
+  signal(SIGWINCH, sogel_sigwinch_handler);
+  sogel_update_terminal_size();
+#else
+#error "sogel_init: platform input init not implemented"
+#endif
+
+  sogel_last_tick = sogel_get_time_ms();
+  SOGEL_LOG_DEBUG("Init complete (clock initialised)");
+}
+
+SOGEL_DEF void sogel_deinit(void) {
+  SOGEL_LOG_INFO("Sogel shutting down");
+
+#ifdef SOGEL_PLATFORM_UNIX
+  sogel_terminal_restore();
+#endif
+
+  free(sogel_buffer);
+  sogel_buffer = NULL;
+
+  SOGEL_LOG_DEBUG("Deinit complete");
+}
 
 SOGEL_DEF void sogel_set_fps(uint32_t fps) {
   SOGEL_ASSERT(fps > 0, "FPS must be greater than 0");
@@ -298,20 +659,12 @@ SOGEL_DEF uint64_t sogel_get_frame_delay_us(void) {
 SOGEL_DEF void sogel_set_size(uint16_t width, uint16_t height) {
   SOGEL_ASSERT(width > 0 && height > 0, "Width and height must be greater than 0");
 
-  if (width > SOGEL_MAX_WIDTH) {
-    SOGEL_LOG_WARN("Width %u exceeds max %d, clamping", width, SOGEL_MAX_WIDTH);
-    width = SOGEL_MAX_WIDTH;
-  }
-
-  if (height > SOGEL_MAX_HEIGHT) {
-    SOGEL_LOG_WARN("Height %u exceeds max %d, clamping", height, SOGEL_MAX_HEIGHT);
-    height = SOGEL_MAX_HEIGHT;
-  }
-
   sogel_width  = width;
   sogel_height = height;
-  sogel_clear();
 
+  sogel_resize_buffer(width, height);
+
+  sogel_clear();
   SOGEL_LOG_DEBUG("Window size set to %ux%u", width, height);
 }
 
@@ -324,27 +677,39 @@ SOGEL_DEF uint16_t sogel_get_height(void) {
 }
 
 SOGEL_DEF void sogel_hide_cursor(void) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
   printf(SOGEL_ANSI_CURSOR_HIDE);
   fflush(stdout);
   SOGEL_LOG_DEBUG("Cursor hidden");
+#else
+#error "sogel_hide_cursor" is not defined for your platform yet
+#endif
 }
 
 SOGEL_DEF void sogel_show_cursor(void) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
   printf(SOGEL_ANSI_CURSOR_SHOW);
   fflush(stdout);
   SOGEL_LOG_DEBUG("Cursor shown");
+#else
+#error "sogel_show_cursor" is not defined for your platform yet
+#endif
+}
+
+SOGEL_DEF void sogel_clear_term(void) {
+#if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL && defined(SOGEL_PLATFORM_UNIX)
+  printf(SOGEL_ANSI_CLEAR_SCREEN);
+  fflush(stdout);
+  SOGEL_LOG_DEBUG("Terminal was cleared");
+#else
+#error "sogel_clear_term" is not defined for your platform yet
+#endif
 }
 
 SOGEL_DEF void sogel_clear(void) {
   memset(sogel_buffer, ' ', (size_t)sogel_width * sogel_height);
   sogel_buffer[sogel_width * sogel_height] = '\0';
   SOGEL_LOG_TRACE("Buffer cleared (%ux%u)", sogel_width, sogel_height);
-}
-
-SOGEL_DEF void sogel_clear_term(void) {
-  printf(SOGEL_ANSI_CLEAR_SCREEN);
-  fflush(stdout);
-  SOGEL_LOG_DEBUG("Terminal was cleared");
 }
 
 SOGEL_DEF char *sogel_at(uint16_t x, uint16_t y) {
@@ -363,27 +728,30 @@ SOGEL_DEF void sogel_add_object(Object *obj) {
   }
 }
 
-SOGEL_DEF void sogel_tick(void) {
-  uint64_t now      = sogel_get_time_ms();
-  uint64_t delta_ms = now - sogel_last_tick;
-  sogel_last_tick   = now;
+SOGEL_DEF void sogel_update(void) {
+  uint64_t now         = sogel_get_time_ms();
+  sogel_frame_delta_ms = now - sogel_last_tick;
+  sogel_last_tick      = now;
 
   for (size_t i = 0; i < sogel_objects_count; i++) {
     Object *obj = sogel_objects[i];
-    SOGEL_ASSERT(obj != NULL, "Object must not be NULL");
 
     if (obj->update) {
-      obj->update(obj, delta_ms);
+      obj->update(obj, sogel_frame_delta_ms);
       SOGEL_LOG_TRACE("Object %zu update() called", i);
     }
+  }
+}
+
+SOGEL_DEF void sogel_draw(void) {
+  for (size_t i = 0; i < sogel_objects_count; i++) {
+    Object *obj = sogel_objects[i];
 
     if (obj->draw) {
-      obj->draw(obj, delta_ms);
-      SOGEL_LOG_TRACE("Object %zu draw() triggered", i);
+      obj->draw(obj, sogel_frame_delta_ms);
+      SOGEL_LOG_TRACE("Object %zu draw() called", i);
     }
   }
-
-  SOGEL_LOG_TRACE("Tick: %zu objects", sogel_objects_count);
 }
 
 // Platform-specific
@@ -413,19 +781,43 @@ SOGEL_DEF void sogel_sleep_us(uint64_t microseconds) {
 SOGEL_DEF void sogel_render(void) {
 #if SOGEL_BACKEND == SOGEL_BACKEND_TERMINAL
   SOGEL_LOG_DEBUG("Rendering frame (%ux%u)", sogel_width, sogel_height);
-  printf(SOGEL_ANSI_HOME);
 
-  uint32_t total = (uint32_t)sogel_width * sogel_height;
-  for (uint32_t i = 0; i < total; i++) {
-    putchar(sogel_buffer[i]);
+  const uint16_t h = sogel_height;
+  const uint16_t w = sogel_width;
 
-    if ((i + 1) % sogel_width == 0) {
-      putchar('\n');
-    }
+  /* iovec layout: ANSI_HOME | row0 | '\n' | row1 | '\n' | ... | row_{h-1} (no '\n') */
+  uint16_t     iov_count = 1 + 2 * (uint16_t)h;
+  struct iovec iov[1 + 2 * SOGEL_MAX_HEIGHT];
+  uint16_t     idx = 0;
+
+  iov[idx].iov_base = (void *)SOGEL_ANSI_HOME;
+  iov[idx].iov_len  = 3;
+  idx++;
+
+  for (uint16_t y = 0; y < h - 1; y++) {
+    iov[idx].iov_base = sogel_buffer + (size_t)y * w;
+    iov[idx].iov_len  = w;
+    idx++;
+
+    iov[idx].iov_base = (void *)"\n";
+    iov[idx].iov_len  = 1;
+    idx++;
+  }
+
+  iov[idx].iov_base = sogel_buffer + (size_t)(h - 1) * w;
+  iov[idx].iov_len  = w;
+
+  iov_count = idx;
+
+  ssize_t total = writev(STDOUT_FILENO, iov, iov_count);
+
+  if (total == -1) {
+    SOGEL_LOG_ERROR("writev failed: %s", strerror(errno));
+  } else {
+    SOGEL_LOG_TRACE("Frame rendered, %zd bytes written", total);
   }
 
   fflush(stdout);
-  SOGEL_LOG_TRACE("Frame rendered, total characters: %u", total);
 #else
 #error "sogel_render" is not implemented for your platform yet
 #endif
@@ -442,59 +834,63 @@ SOGEL_DEF bool sogel_timer_elapsed(SogelTimer *t) {
   return false;
 }
 
-SOGEL_DEF void sogel_setup_input(void) {
-#ifdef SOGEL_PLATFORM_UNIX
-  sogel_terminal_enable_raw();
-#else
-#error "sogel_setup_input" is now implemented for your platform yet
-#endif
-
-  sogel_last_tick = sogel_get_time_ms();
-  SOGEL_LOG_DEBUG("Tick clock initialised");
-}
-
 SOGEL_DEF void sogel_poll_events(void) {
   memcpy(sogel_keys_prev, sogel_keys_curr, sizeof(sogel_keys_prev));
   memset(sogel_keys_curr, 0, sizeof(sogel_keys_curr));
-  sogel_last_char = 0;
 
-#ifdef SOGEL_PLATFORM_UNIX
-  SOGEL_ASSERT(sogel_termios_saved, "Input not set up – call sogel_setup_input() first");
+  if (sogel_terminal_resized) {
+    uint64_t now = sogel_get_time_ms();
 
-  uint8_t buf[32];
-  int32_t n = read(STDIN_FILENO, buf, sizeof(buf));
-  int32_t i = 0;
-
-  while (i < n) {
-    uint8_t ch = buf[i];
-
-    // Detect ANSI escape sequences (e.g., arrow keys)
-    if (ch == 27 && i + 2 < n && buf[i + 1] == '[') {
-      uint8_t code = buf[i + 2];
-
-      switch (code) {
-        case 'A': sogel_keys_curr[SOGEL_KEY_UP] = true; break;
-        case 'B': sogel_keys_curr[SOGEL_KEY_DOWN] = true; break;
-        case 'C': sogel_keys_curr[SOGEL_KEY_RIGHT] = true; break;
-        case 'D': sogel_keys_curr[SOGEL_KEY_LEFT] = true; break;
-        default:
-          SOGEL_LOG_TRACE("Unknown ANSI sequence: ESC [ %c (0x%02x)", code, code);
-          break;
-      }
-
-      i += 3;
-    } else {
-      // Regular char
-      sogel_keys_curr[ch] = true;
-      sogel_last_char     = ch;
-      i++;
+    if (now - sogel_last_resize_ms > SOGEL_RESIZE_DEBOUNCE_MS) {
+      sogel_terminal_resized = false;
+      sogel_last_resize_ms   = now;
+      sogel_update_terminal_size();
     }
   }
 
-  SOGEL_LOG_TRACE("Polled input: %d bytes, last char %u", n, sogel_last_char);
+#ifdef SOGEL_PLATFORM_UNIX
+  SOGEL_ASSERT(sogel_termios_saved, "Input not set up – call sogel_init() first");
+
+  uint8_t buf[SOGEL_INPUT_BUFFER_SIZE];
+  int32_t n = read(STDIN_FILENO, buf, sizeof(buf));
+
+  // no data = not an error
+  if (n == -1 && errno != EAGAIN) {
+    SOGEL_LOG_ERROR("read from stdin failed: %s", strerror(errno));
+  } else if (n > 0) {
+    sogel_process_input_buffer(buf, n);
+    SOGEL_LOG_TRACE("Processed %d input bytes", n);
+  }
+
+  sogel_generate_key_up_events();
 #else
-#error "sogel_poll_events" is not implemented for your platform yet
+#error "sogel_poll_events not implemented"
 #endif
+}
+
+SOGEL_DEF bool sogel_next_event(SogelEvent *event) {
+  SOGEL_ASSERT(event != NULL, "Event must not be NULL");
+
+  if (sogel_event_head == sogel_event_tail) {
+    return false;
+  }
+
+  *event = sogel_events[sogel_event_head];
+
+  sogel_event_head = (sogel_event_head + 1) % SOGEL_MAX_EVENTS;
+  return true;
+}
+
+SOGEL_DEF bool sogel_push_user_event(uint32_t code, void *data1, void *data2) {
+  SogelEvent e = {
+    .type = SOGEL_EVENT_USER,
+  };
+
+  e.user.code  = code;
+  e.user.data1 = data1;
+  e.user.data2 = data2;
+
+  return sogel_push_event(&e);
 }
 
 SOGEL_DEF bool sogel_is_key_down(uint16_t key) {
@@ -514,8 +910,16 @@ SOGEL_DEF bool sogel_is_key_released(uint16_t key) {
   return !sogel_keys_curr[key] && sogel_keys_prev[key];
 }
 
-SOGEL_DEF uint16_t sogel_get_char(void) {
-  return sogel_last_char;
+SOGEL_DEF int16_t sogel_get_mouse_x(void) {
+  return sogel_mouse_x;
+}
+
+SOGEL_DEF int16_t sogel_get_mouse_y(void) {
+  return sogel_mouse_y;
+}
+
+SOGEL_DEF bool sogel_is_mouse_down(uint8_t button) {
+  return (button < 8) ? sogel_mouse_buttons[button] : false;
 }
 
 #endif  // SOGEL_IMPLEMENTATION

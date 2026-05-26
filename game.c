@@ -146,7 +146,7 @@ static ScrollingText scrolling_text = {
     .update = NULL,
   },
   .text         = "THIS TEXT TOO LONG SO IT SCROLLS EVERY 0.2 SECONDS PER CHAR   ",
-  .width        = 15,
+  .width        = 25,
   .offset       = 0,
   .scroll_timer = {200, 0},
 };
@@ -227,7 +227,7 @@ void update_ball(Object *obj, uint64_t delta_ms) {
   this->header.x = (uint16_t)this->x_sub;
   this->header.y = (uint16_t)this->y_sub;
 
-  if (sogel_is_key_down(SOGEL_KEY_SPACE)) {
+  if (sogel_is_key_pressed(SOGEL_KEY_SPACE)) {
     this->use_delta = !this->use_delta;
   }
 }
@@ -258,8 +258,8 @@ static Ball ball = {
 void draw_help_text(Object *obj, uint64_t delta_ms) {
   (void)delta_ms;
   const char *text =
-    "Press Esc to quit. Use <UP>, <DOWN>, <LEFT> and <RIGHT> keys to control the waving man."
-    "Ball uses delts: ";
+    "Press <ESC> to quit. Use <UP>, <DOWN>, <LEFT> and <RIGHT> keys to control the waving man. "
+    "(press <SPACE> to flip) Ball uses delta: ";
   snprintf(sogel_at(obj->x, obj->y), strlen(text) + 6, "%s%s", text, ball.use_delta ? "yes" : "no");
 }
 
@@ -268,6 +268,91 @@ static Object help_text = {
   .y      = 0,
   .draw   = draw_help_text,
   .update = NULL,
+};
+
+// ==============================
+
+typedef struct Trail {
+  int16_t  x;
+  int16_t  y;
+  uint64_t ts;
+} Trail;
+
+typedef struct MouseBrush {
+  Object  header;
+  char    brush;
+  char   *fade_chars;
+  uint8_t num_fade_chars;
+
+  Trail trail[8];
+
+  uint16_t trail_head;
+  uint16_t trail_count;
+
+  int16_t last_x, last_y;
+} MouseBrush;
+
+void update_mouse_brush(Object *obj, uint64_t delta_ms) {
+  MouseBrush *this = (MouseBrush *)obj;
+  (void)delta_ms;
+
+  if (!sogel_is_mouse_down(SOGEL_MOUSE_LEFT)) {
+    return;
+  }
+
+  int16_t x = sogel_get_mouse_x();
+  int16_t y = sogel_get_mouse_y();
+
+  if (x == this->last_x && y == this->last_y) return;
+  this->last_x = x;
+  this->last_y = y;
+
+  uint64_t now                  = sogel_get_time_ms();
+  this->trail[this->trail_head] = (Trail){x, y, now};
+  this->trail_head              = (this->trail_head + 1) % 8;
+
+  if (this->trail_count < 8) {
+    this->trail_count++;
+  }
+}
+
+void draw_mouse_brush(Object *obj, uint64_t delta_ms) {
+  MouseBrush *this = (MouseBrush *)obj;
+  (void)delta_ms;
+
+  uint64_t now   = sogel_get_time_ms();
+  uint16_t start = (this->trail_head - this->trail_count) % 8;
+
+  uint32_t trail_lifetime_ms = 700;
+
+  for (uint16_t i = 0; i < this->trail_count; i++) {
+    uint16_t idx = (start + i) % 8;
+    int16_t  x   = this->trail[idx].x;
+    int16_t  y   = this->trail[idx].y;
+    uint64_t age = now - this->trail[idx].ts;
+
+    if (age >= trail_lifetime_ms) {
+      continue;
+    }
+
+    uint8_t char_idx = (uint8_t)((age * (this->num_fade_chars - 1)) / trail_lifetime_ms);
+    *sogel_at(x, y)  = this->fade_chars[char_idx];
+  }
+
+  if (sogel_is_mouse_down(SOGEL_MOUSE_LEFT)) {
+    *sogel_at(sogel_get_mouse_x(), sogel_get_mouse_y()) = this->brush;
+  }
+}
+
+static MouseBrush mouse_brush = {
+  .header         = {.draw = draw_mouse_brush, .update = update_mouse_brush},
+  .brush          = '#',
+  .fade_chars     = "#%*+:. ",
+  .num_fade_chars = 7,
+  .trail_head     = 0,
+  .trail_count    = 0,
+  .last_x         = 0,
+  .last_y         = 0,
 };
 
 // ==============================
@@ -283,34 +368,52 @@ int main(void) {
   signal(SIGINT, intHandler);
 
   setup_logcie();
-
-  sogel_set_size(60, 40);
-  sogel_set_fps(60);
-  sogel_hide_cursor();
-  sogel_clear_term();
-  sogel_setup_input();
+  sogel_init(60, 40, 60);
 
   sogel_add_object(&help_text);
+  sogel_add_object(&mouse_brush.header);
   sogel_add_object(&ball.header);
   sogel_add_object(&scrolling_text.header);
   sogel_add_object(&counter.header);
   sogel_add_object(&man_hello.header);
 
   while (run) {
+    sogel_clear();
     sogel_poll_events();
 
-    if (sogel_is_key_pressed(SOGEL_KEY_ESC)) {
-      run = false;
+    SogelEvent e;
+
+    while (sogel_next_event(&e)) {
+      switch (e.type) {
+        case SOGEL_EVENT_QUIT:
+          run = false;
+          break;
+
+        case SOGEL_EVENT_KEY_DOWN:
+          if (e.key.key == SOGEL_KEY_ESC) {
+            run = false;
+          }
+
+          break;
+
+        case SOGEL_EVENT_RESIZE:
+          sogel_clear_term();
+          break;
+
+        default:
+          break;
+      }
     }
 
-    sogel_clear();
-    sogel_tick();
+    sogel_update();
+    sogel_draw();
     sogel_render();
 
     sogel_sleep_us(sogel_get_frame_delay_us());
   }
 
   sogel_show_cursor();
+  sogel_deinit();
 
   if (log_file) {
     fclose(log_file);
