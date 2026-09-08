@@ -167,7 +167,7 @@
 #ifdef LOGCIE_VA_LOGS
 #define SOGEL_LOG(level, ...) LOGCIE_##level##_VA(__VA_ARGS__)
 #else
-#define SOGEL_LOG(level, ...) LOGCIE_##level(__VA_ARGS__)
+#define SOGEL_LOG(level, ...) LOGCIE_LOG_MOD("SOGEL", level, __VA_ARGS__)
 #endif
 #else
 #define SOGEL_LOG(level, ...) ((void)0)
