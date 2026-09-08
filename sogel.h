@@ -155,9 +155,10 @@
 #define SOGEL_KEY_RIGHTBRACE   '}'
 #define SOGEL_KEY_PIPE         '|'
 #define SOGEL_KEY_TILDE        '~'
-#define SOGEL_MOUSE_LEFT       1
-#define SOGEL_MOUSE_RIGHT      2
-#define SOGEL_MOUSE_MIDDLE     3
+#define SOGEL_MOUSE_LEFT       0b00000001
+#define SOGEL_MOUSE_RIGHT      0b00000010
+#define SOGEL_MOUSE_MIDDLE     0b00000100
+#define SOGEL_MOUSE_ANY        0b11111111
 #else
 #error "Keycodes only Unix+Term are supported"
 #endif
@@ -334,9 +335,10 @@ static size_t  sogel_objects_count = 0;
 static bool sogel_keys_curr[SOGEL_MAX_KEY] = {0};
 static bool sogel_keys_prev[SOGEL_MAX_KEY] = {0};
 
-static int16_t sogel_mouse_x          = 0;
-static int16_t sogel_mouse_y          = 0;
-static bool    sogel_mouse_buttons[8] = {0};
+#define SOGEL_MOUSE_BUTTONS_COUNT 8
+static int16_t sogel_mouse_x       = 0;
+static int16_t sogel_mouse_y       = 0;
+static uint8_t sogel_mouse_buttons = 0;
 
 static SogelEvent sogel_events[SOGEL_MAX_EVENTS];
 static uint16_t   sogel_event_head = 0;
@@ -521,11 +523,9 @@ static bool sogel_parse_mouse_event(const uint8_t *buf, int32_t len, int32_t *co
   sogel_mouse_y = e.mouse.y;
 
   if (e.type == SOGEL_EVENT_MOUSE_DOWN) {
-    sogel_mouse_buttons[e.mouse.button] = true;
-  }
-
-  else if (e.type == SOGEL_EVENT_MOUSE_UP) {
-    sogel_mouse_buttons[e.mouse.button] = false;
+    sogel_mouse_buttons |= (1u << (e.mouse.button - 1));
+  } else if (e.type == SOGEL_EVENT_MOUSE_UP) {
+    sogel_mouse_buttons &= ~(1u << (e.mouse.button - 1));
   }
 
   sogel_push_event(&e);
@@ -924,7 +924,16 @@ SOGEL_DEF int16_t sogel_get_mouse_y(void) {
 }
 
 SOGEL_DEF bool sogel_is_mouse_down(uint8_t button) {
-  return (button < 8) ? sogel_mouse_buttons[button] : false;
+  if (button == 0 || button > 8) return false;
+  return (sogel_mouse_buttons & (1u << (button - 1))) != 0;
+}
+
+SOGEL_DEF bool sogel_is_mouse_down_any(uint8_t mask) {
+  return (sogel_mouse_buttons & mask) != 0;
+}
+
+SOGEL_DEF bool sogel_is_mouse_down_all(uint8_t mask) {
+  return (sogel_mouse_buttons & mask) == mask;
 }
 
 #endif  // SOGEL_IMPLEMENTATION

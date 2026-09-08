@@ -22,7 +22,6 @@ void setup_logcie(void) {
   }
 
   logcie_remove_all_sinks();
-  logcie_set_threads(1);
   static Logcie_Sink sink = {
     .formatter = {logcie_token_formatter, "[$M:$L] $m"},
     .writer    = {logcie_file_writer, logcie_file_flush, NULL},

@@ -1,5 +1,5 @@
 /*
- * Logcie v3.0.0 - Logging Library (Single Header)
+ * Logcie v3.2.0 - Logging Library (Single Header)
  *
  * Description:
  *   Logcie is a lightweight, modular, single-header logging library written in C.
@@ -9,6 +9,12 @@
  * Basic usage:
  *   #define LOGCIE_IMPLEMENTATION
  *   #include "logcie.h"
+ *
+ *   Define LOGCIE_IMPLEMENTATION in exactly one translation unit -- usually a deps.c
+ *   or libs.c holding your header-only libraries. That file compiles the whole of
+ *   logcie, so logcie's own statics are in scope there: a custom formatter or writer
+ *   that wants get_logcie_level_label, the render helpers or the internal macros
+ *   belongs in that file rather than reimplementing them.
  *
  *   LOGCIE_INFO("Hello from Logcie");
  *   LOGCIE_VERBOSE("Logcie supports %s logging", "printf-style");
@@ -36,10 +42,6 @@
  *   LOGCIE_DEFAULT_SINK_FORMAT     Format string for the automatic stdout sink
  *   LOGCIE_DEF                     Linkage of public functions (default extern)
  *   LOGCIE_THREAD_SAFE             Enable mutex‑based thread safety (needs pthreads)
- *   LOGCIE_THREADS_BUF_LEN         Most workers logcie_set_threads will start (default: 192)
- *   LOGCIE_NO_THREADS              Build without workers; logcie_set_threads accepts only 0
- *   LOGCIE_QUEUE_CAPACITY          Slots in a worker's queue (default: 64)
- *   LOGCIE_QUEUE_MESSAGE_SIZE      Bytes of message a queue slot holds inline (default: 256)
  *   LOGCIE_ALLOW_RECURSIVE_LOGGING Allow logging from inside writers/formatters
  *   LOGCIE_PEDANTIC                Force strict C99 fallback (LOGCIE_*_VA macros)
  *   LOGCIE_COLOR_*                 ANSI escape codes per level (also logcie_set_colors)
@@ -118,6 +120,7 @@
  *                                   `$f` - Source file name
  *                                   `$x` - Line number
  *                                   `$M` - Module name
+ *                                   `$T` - Operating system thread id, empty where logcie cannot read one
  *                                   `$l` - Log level (lowercase)
  *                                   `$L` - Log level (uppercase)
  *                                   `$c` - ANSI color code for log level
@@ -158,10 +161,6 @@
  *   This library does not manage the lifetime of Sinks or their associated resources.
  *   A Sink must stay valid for as long as it is registered. Keeping them in main, or
  *   in static scope, is the easy way.
- *
- *   With workers running a Sink is also read from another thread, so change one only
- *   while it is unregistered. logcie_add_sink and logcie_remove_sink drain the queues,
- *   so removing and re-adding is safe.
  *
  * Filters:
  *   Filters allow you to control which logs are emitted to a specific Sink.
@@ -374,7 +373,7 @@
 
 // Versioning macros
 #define LOGCIE_VERSION_MAJOR         3
-#define LOGCIE_VERSION_MINOR         0
+#define LOGCIE_VERSION_MINOR         2
 #define LOGCIE_VERSION_RELEASE       0
 #define LOGCIE_VERSION_NUMBER        (LOGCIE_VERSION_MAJOR * 100 * 100 + LOGCIE_VERSION_MINOR * 100 + LOGCIE_VERSION_RELEASE)
 #define LOGCIE_VERSION_FULL          LOGCIE_VERSION_MAJOR.LOGCIE_VERSION_MINOR.LOGCIE_VERSION_RELEASE
@@ -523,59 +522,6 @@ typedef enum Logcie_LogLevel {
  */
 #ifndef LOGCIE_MAX_SINKS
 #define LOGCIE_MAX_SINKS 16
-#endif
-
-/**
- * @brief Most worker threads logcie_set_threads will start.
- *
- * Only the Logcie_Worker array is this long. A worker is a few hundred bytes and
- * its queue is allocated when it starts, so an unused slot costs almost
- * nothing. The default is the widest consumer CPU currently made.
- *
- * Define LOGCIE_NO_THREADS on a platform that has none. logcie_set_threads then
- * accepts only zero and the workers compile out entirely.
- *
- * @note Under LOGCIE_NO_MALLOC a queue can only be static, so every possible
- *       worker pays for one and the default drops to suit.
- */
-#ifndef LOGCIE_THREADS_BUF_LEN
-#ifdef LOGCIE_NO_MALLOC
-#define LOGCIE_THREADS_BUF_LEN 4
-#else
-#define LOGCIE_THREADS_BUF_LEN 192
-#endif
-#endif
-
-#ifndef LOGCIE_NO_THREADS
-// NOTE: workers share the sink array with the calling thread, so the mutex is
-// not optional once they exist.
-#ifndef LOGCIE_THREAD_SAFE
-#define LOGCIE_THREAD_SAFE
-#endif
-#endif
-
-/**
- * @brief Bytes of message text a queue slot holds without allocating.
- *
- * A slot holds the message, not the line: the formatter runs on the worker.
- * Longer messages go through LOGCIE_MALLOC, or are truncated under
- * LOGCIE_NO_MALLOC.
- *
- * @note Every slot is this big, so it is multiplied by LOGCIE_QUEUE_CAPACITY
- *       and the number of running workers.
- */
-#ifndef LOGCIE_QUEUE_MESSAGE_SIZE
-#define LOGCIE_QUEUE_MESSAGE_SIZE 256
-#endif
-
-/**
- * @brief Slots in each worker's queue.
- *
- * A worker with no free slot drops its lowest-level entry to make room, and
- * counts the drop.
- */
-#ifndef LOGCIE_QUEUE_CAPACITY
-#define LOGCIE_QUEUE_CAPACITY 64
 #endif
 
 /**
@@ -759,9 +705,7 @@ typedef struct Logcie_LogLocation {
  * @field msg       The message: the format string with its arguments applied
  * @field time      Timestamp when the log was created
  * @field nanos     Nanoseconds. 0 when not supported
- * @field module    Optional module name for categorizing logs. Stored as a
- *                  pointer and must have static storage duration. A worker
- *                  reads it long after logcie_log returned
+ * @field module    Optional module name for categorizing logs
  * @field location  Source file and line number where log was called
  */
 struct Logcie_Log {
@@ -961,49 +905,12 @@ LOGCIE_DEF uint8_t logcie_remove_sink_by_index(size_t index);
 LOGCIE_DEF void logcie_remove_all_sinks(void);
 
 /**
- * @brief Drains every worker queue, then flushes every registered sink.
+ * @brief Flushes every registered sink that has a flush function.
  *
- * @note Call it before returning from main. Whatever is still queued is
- *       dropped otherwise.
- * @note Call it before removing a sink too. Removal does not flush, and does
- *       not close the sink's destination.
+ * @note Call it before removing a sink. Removal does not flush, and does not
+ *       close the sink's destination.
  */
 LOGCIE_DEF void logcie_flush(void);
-
-/**
- * @brief Runs `count` worker threads. Until this is called, sinks run on the
- *        calling thread.
- *
- * One worker drains a sink, so that sink's lines reach it in the order they
- * were logged. Order between sinks is unspecified.
- *
- * It blocks, because changing the count drains every queue first. A failed
- * start leaves logging synchronous. A worker runs its sinks one after another,
- * so a slow sink delays the others sharing it.
- *
- * @param count  Workers to run, up to LOGCIE_THREADS_BUF_LEN. Zero drains the
- *               queues, stops the workers and returns to the calling thread
- * @return 1 on success, 0 if count exceeds LOGCIE_THREADS_BUF_LEN or a thread
- *         could not start
- * @note Call it from one thread at a time, and never from inside a formatter,
- *       writer or filter.
- * @note Registering or removing a sink drains every queue first. A worker can
- *       then reach its sinks without taking a lock.
- */
-LOGCIE_DEF uint8_t logcie_set_threads(size_t count);
-
-/**
- * @brief Lines dropped by full queues since the last call.
- *
- * A queue with no free slot drops its lowest-level entry. Nothing is written
- * about it: the sink whose backlog caused the drop is the worst place to send
- * an extra line. The count is here so a program can report it wherever it
- * makes sense.
- *
- * @return Lines dropped since the previous call, and resets the count. Drops
- *         from workers that have since been stopped are still included
- */
-LOGCIE_DEF size_t logcie_get_dropped_logs_count(void);
 
 /**
  * @brief Default formatter using printf-style formatting and $ tokens.
@@ -1063,11 +970,11 @@ LOGCIE_DEF size_t logcie_file_writer(void *user_data, const Logcie_Log *log, con
 LOGCIE_DEF void logcie_file_flush(void *user_data);
 
 /**
- * @brief Renders the user's message into a buffer.
+ * @brief Copies the message into a buffer.
  *
- * Useful when writing a formatter: every formatter has to turn log->msg plus
- * its arguments into text, and this handles the va_list copying that a second
- * render pass requires.
+ * logcie_log applies the printf arguments before any sink runs, so log->msg is
+ * already the finished message. This is how a formatter gets it, with the same
+ * contract as snprintf.
  *
  * @param buf   Destination buffer, or NULL when cap is 0
  * @param cap   Capacity of buf
@@ -1248,6 +1155,10 @@ LOGCIE_DEF void logcie_set_colors(const char **colors);
 #include <stdlib.h>
 #endif
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #ifndef LOGCIE_INTERNAL_ASSERT
 #define LOGCIE_INTERNAL_ASSERT(bool, msg) assert(bool &&msg)
 #endif
@@ -1270,8 +1181,6 @@ LOGCIE_DEF void logcie_set_colors(const char **colors);
 #define LOGCIE_MUTEX_UNLOCK(m)
 #else
 #if defined(_WIN32)
-#include <windows.h>
-typedef SRWLOCK Logcie_Mutex;
 #define LOGCIE_MUTEX_DECLARE(name) SRWLOCK name = SRWLOCK_INIT
 #define LOGCIE_MUTEX_INIT(m)
 #define LOGCIE_MUTEX_DESTROY(m)
@@ -1279,7 +1188,6 @@ typedef SRWLOCK Logcie_Mutex;
 #define LOGCIE_MUTEX_UNLOCK(m) ReleaseSRWLockExclusive(&(m))
 #else
 #include <pthread.h>
-typedef pthread_mutex_t Logcie_Mutex;
 #define LOGCIE_MUTEX_DECLARE(name) pthread_mutex_t name = PTHREAD_MUTEX_INITIALIZER
 #define LOGCIE_MUTEX_INIT(m)       pthread_mutex_init(&(m), NULL)
 #define LOGCIE_MUTEX_DESTROY(m)    pthread_mutex_destroy(&(m))
@@ -1302,6 +1210,58 @@ LOGCIE_MUTEX_DECLARE(logcie_mutex);
 #endif
 
 static LOGCIE_THREAD_LOCAL int logcie_log_depth = 0;
+
+// NOTE: whatever the operating system calls a thread, so a log line can be
+// matched against a thread in top, gdb or a journal. Every platform spells it
+// differently and the type differs too, so it is normalised to one width.
+//
+// NOTE: on glibc, syscall() is declared unless the dialect is strict -- gcc's
+// default and -std=gnu11 define _DEFAULT_SOURCE, -std=c99 does not. Under a
+// strict dialect $T is empty until the program defines _DEFAULT_SOURCE or
+// _GNU_SOURCE itself, the way an example already does for $N.
+#if defined(_WIN32)
+#define LOGCIE_INTERNAL_THREAD_ID() ((unsigned long long)GetCurrentThreadId())
+#elif defined(__APPLE__) && (defined(_DARWIN_C_SOURCE) || (defined(__DARWIN_C_LEVEL) && __DARWIN_C_LEVEL >= 900000L))
+#define LOGCIE_INTERNAL_THREAD_ID() logcie_darwin_thread_id()
+#include <pthread.h>
+#elif defined(__linux__) && (defined(_GNU_SOURCE) || defined(_DEFAULT_SOURCE) || defined(_BSD_SOURCE))
+#include <sys/syscall.h>
+#include <unistd.h>
+#define LOGCIE_INTERNAL_THREAD_ID() ((unsigned long long)syscall(SYS_gettid))
+#elif defined(__FreeBSD__)
+#include <pthread_np.h>
+#define LOGCIE_INTERNAL_THREAD_ID() ((unsigned long long)pthread_getthreadid_np())
+#elif defined(__OpenBSD__)
+#include <unistd.h>
+#define LOGCIE_INTERNAL_THREAD_ID() ((unsigned long long)getthrid())
+#elif defined(__NetBSD__)
+#include <lwp.h>
+#define LOGCIE_INTERNAL_THREAD_ID() ((unsigned long long)_lwp_self())
+#endif
+
+#ifdef LOGCIE_INTERNAL_THREAD_ID
+
+#if defined(__APPLE__) && (defined(_DARWIN_C_SOURCE) || (defined(__DARWIN_C_LEVEL) && __DARWIN_C_LEVEL >= 900000L))
+static unsigned long long logcie_darwin_thread_id(void) {
+  uint64_t id = 0;
+
+  pthread_threadid_np(NULL, &id);
+  return (unsigned long long)id;
+}
+#endif
+
+// NOTE: zero means not fetched yet.
+static LOGCIE_THREAD_LOCAL unsigned long long logcie_thread_id = 0;
+
+static inline unsigned long long logcie_current_thread_id(void) {
+  if (logcie_thread_id == 0) {
+    logcie_thread_id = LOGCIE_INTERNAL_THREAD_ID();
+  }
+
+  return logcie_thread_id;
+}
+
+#endif  // LOGCIE_INTERNAL_THREAD_ID
 
 // NOTE: localtime and gmtime hand back a pointer into storage shared across the
 // process, so two threads formatting at once can read a struct the other is
@@ -1431,219 +1391,9 @@ __attribute__((constructor)) void init_default_stdout_sink(void) {
 }
 #endif
 
-#ifndef LOGCIE_NO_THREADS
-#define LOGCIE_INTERNAL_QUEUE_NIL ((size_t)-1)
-
-// NOTE: len says which arm of msg is live -- at or over
-// LOGCIE_QUEUE_MESSAGE_SIZE it is msg.heap, otherwise msg.line. Free slots are
-// reached only through next, which is outside the union, so an unwritten msg is
-// never read.
-typedef struct Logcie_QueueEntry {
-  // NOTE: next comes first so it shares a cache line with log.level. The
-  // eviction scan reads only those two.
-  size_t     next;
-  Logcie_Log log;
-  size_t     len;
-
-  union {
-    char  line[LOGCIE_QUEUE_MESSAGE_SIZE];
-    char *heap;
-  } msg;
-} Logcie_QueueEntry;
-
-// NOTE: linked by index rather than a ring so eviction can unlink from the
-// middle without moving anything.
-typedef struct Logcie_Queue {
-  Logcie_QueueEntry entries[LOGCIE_QUEUE_CAPACITY];
-  size_t            head;
-  size_t            tail;
-  size_t            free_head;
-  size_t            dropped;
-} Logcie_Queue;
-
-// NOTE: a length equal to the buffer is already on the heap arm, because
-// msg.line holds len plus a terminator.
-static inline char *logcie_queue_entry_bytes(const Logcie_QueueEntry *entry) {
-  return entry->len >= LOGCIE_QUEUE_MESSAGE_SIZE ? entry->msg.heap : (char *)entry->msg.line;
-}
-
-static void logcie_queue_init(Logcie_Queue *queue) {
-  queue->head      = LOGCIE_INTERNAL_QUEUE_NIL;
-  queue->tail      = LOGCIE_INTERNAL_QUEUE_NIL;
-  queue->free_head = 0;
-  queue->dropped   = 0;
-
-  for (size_t i = 0; i < LOGCIE_QUEUE_CAPACITY; i++) {
-    queue->entries[i].next = (i + 1 < LOGCIE_QUEUE_CAPACITY) ? i + 1 : LOGCIE_INTERNAL_QUEUE_NIL;
-    queue->entries[i].len  = 0;
-  }
-}
-
-static void logcie_queue_clear(Logcie_Queue *queue) {
-#ifndef LOGCIE_NO_MALLOC
-  for (size_t i = queue->head; i != LOGCIE_INTERNAL_QUEUE_NIL; i = queue->entries[i].next) {
-    if (queue->entries[i].len >= LOGCIE_QUEUE_MESSAGE_SIZE) {
-      LOGCIE_FREE(queue->entries[i].msg.heap);
-    }
-  }
-#endif
-
-  logcie_queue_init(queue);
-}
-
-// NOTE: keeps the first entry of the lowest level. The list is FIFO, so ties go
-// to the oldest.
-static void logcie_queue_evict(Logcie_Queue *queue) {
-  if (queue->head == LOGCIE_INTERNAL_QUEUE_NIL) {
-    return;
-  }
-
-  size_t victim      = queue->head;
-  size_t victim_prev = LOGCIE_INTERNAL_QUEUE_NIL;
-  size_t prev        = LOGCIE_INTERNAL_QUEUE_NIL;
-
-  for (size_t i = queue->head; i != LOGCIE_INTERNAL_QUEUE_NIL; i = queue->entries[i].next) {
-    if (queue->entries[i].log.level < queue->entries[victim].log.level) {
-      victim      = i;
-      victim_prev = prev;
-    }
-
-    prev = i;
-  }
-
-  if (victim_prev == LOGCIE_INTERNAL_QUEUE_NIL) {
-    queue->head = queue->entries[victim].next;
-  } else {
-    queue->entries[victim_prev].next = queue->entries[victim].next;
-  }
-
-  if (victim == queue->tail) {
-    queue->tail = victim_prev;
-  }
-
-#ifndef LOGCIE_NO_MALLOC
-  if (queue->entries[victim].len >= LOGCIE_QUEUE_MESSAGE_SIZE) {
-    LOGCIE_FREE(queue->entries[victim].msg.heap);
-  }
-#endif
-
-  queue->entries[victim].len  = 0;
-  queue->entries[victim].next = queue->free_head;
-  queue->free_head            = victim;
-  queue->dropped++;
-}
-
-static uint8_t logcie_queue_push(Logcie_Queue *queue, const Logcie_Log *log, const char *msg, size_t len) {
-  if (queue->free_head == LOGCIE_INTERNAL_QUEUE_NIL) {
-    logcie_queue_evict(queue);
-  }
-
-  size_t             slot  = queue->free_head;
-  Logcie_QueueEntry *entry = &queue->entries[slot];
-
-  queue->free_head = entry->next;
-
-  entry->log  = *log;
-  entry->next = LOGCIE_INTERNAL_QUEUE_NIL;
-  entry->len  = len;
-
-  if (len < LOGCIE_QUEUE_MESSAGE_SIZE) {
-    memcpy(entry->msg.line, msg, len);
-    entry->msg.line[len] = '\0';
-  } else {
-#ifdef LOGCIE_NO_MALLOC
-    entry->len = LOGCIE_QUEUE_MESSAGE_SIZE - 1;
-    memcpy(entry->msg.line, msg, entry->len);
-    entry->msg.line[entry->len] = '\0';
-#else
-    entry->msg.heap = (char *)LOGCIE_MALLOC(len + 1);
-
-    if (entry->msg.heap != NULL) {
-      memcpy(entry->msg.heap, msg, len);
-      entry->msg.heap[len] = '\0';
-    } else {
-        entry->len = LOGCIE_QUEUE_MESSAGE_SIZE - 1;
-      memcpy(entry->msg.line, msg, entry->len);
-      entry->msg.line[entry->len] = '\0';
-    }
-#endif
-  }
-
-  if (queue->tail == LOGCIE_INTERNAL_QUEUE_NIL) {
-    queue->head = slot;
-  } else {
-    queue->entries[queue->tail].next = slot;
-  }
-
-  queue->tail = slot;
-  return 1;
-}
-
-// NOTE: the caller owns out->msg.heap and must free it.
-static uint8_t logcie_queue_pop(Logcie_Queue *queue, Logcie_QueueEntry *out) {
-  if (queue->head == LOGCIE_INTERNAL_QUEUE_NIL) {
-    return 0;
-  }
-
-  size_t slot = queue->head;
-
-  *out        = queue->entries[slot];
-  queue->head = queue->entries[slot].next;
-
-  if (queue->head == LOGCIE_INTERNAL_QUEUE_NIL) {
-    queue->tail = LOGCIE_INTERNAL_QUEUE_NIL;
-  }
-
-  // NOTE: retagged empty so the slot never frees what the copy now owns.
-  queue->entries[slot].len = 0;
-  queue->entries[slot].next = queue->free_head;
-  queue->free_head          = slot;
-
-  out->next = LOGCIE_INTERNAL_QUEUE_NIL;
-  return 1;
-}
-
-#if defined(_WIN32)
-#error "TODO: windows is not supported yet"
-// A port maps the types below to HANDLE and CONDITION_VARIABLE, and the macros
-// to CreateThread, WaitForSingleObject and SleepConditionVariableSRW. Locking
-// already goes through LOGCIE_MUTEX_*.
-#else
-typedef pthread_t      Logcie_Thread;
-typedef pthread_cond_t Logcie_Signal;
-
-#define LOGCIE_SIGNAL_INIT(s)    (pthread_cond_init(&(s), NULL) == 0)
-#define LOGCIE_SIGNAL_DESTROY(s) pthread_cond_destroy(&(s))
-#define LOGCIE_SIGNAL_WAIT(s, m) pthread_cond_wait(&(s), &(m))
-#define LOGCIE_SIGNAL_WAKE(s)    pthread_cond_signal(&(s))
-
-#define LOGCIE_THREAD_START(t, fn, arg) (pthread_create(&(t), NULL, (fn), (arg)) == 0)
-#define LOGCIE_THREAD_JOIN(t)           pthread_join((t), NULL)
-#define LOGCIE_THREAD_RESULT            void *
-#define LOGCIE_THREAD_DONE              return NULL
-#endif
-
-typedef struct Logcie_Worker {
-  Logcie_Queue *queue;
-  Logcie_Thread thread;
-  Logcie_Mutex  lock;
-  Logcie_Signal wake;
-  Logcie_Signal idle;
-  size_t        pushed;
-  size_t        processed;
-  uint8_t       running;
-} Logcie_Worker;
-
-#endif  // LOGCIE_NO_THREADS
-
 typedef struct Logcie_Logger {
   Logcie_Sink *sinks[LOGCIE_MAX_SINKS];
   size_t       sinks_len;
-
-#ifndef LOGCIE_NO_THREADS
-  size_t workers_len;
-  size_t dropped;
-#endif
 } Logcie_Logger;
 
 // NOTE: positional, not designated. C++ has no designated initializers before
@@ -1652,21 +1402,7 @@ typedef struct Logcie_Logger {
 static Logcie_Logger logcie = {
   {&default_stdout_sink},
   1,
-#ifndef LOGCIE_NO_THREADS
-  0,
-  0,
-#endif
 };
-
-#ifndef LOGCIE_NO_THREADS
-static Logcie_Worker logcie_workers[LOGCIE_THREADS_BUF_LEN];
-
-#ifdef LOGCIE_NO_MALLOC
-// NOTE: with no allocator a queue can only be static, so every possible worker
-// pays for one.
-static Logcie_Queue logcie_queue_pool[LOGCIE_THREADS_BUF_LEN];
-#endif
-#endif
 
 size_t logcie_get_sink_count(void) {
   LOGCIE_MUTEX_LOCK(logcie_mutex);
@@ -1759,305 +1495,6 @@ void logcie_remove_all_sinks(void) {
   LOGCIE_MUTEX_UNLOCK(logcie_mutex);
 }
 
-#ifndef LOGCIE_NO_THREADS
-
-// NOTE: the only place the partition is defined; two open-coded copies would
-// eventually disagree. No workers means the calling thread owns every sink.
-static inline void logcie_worker_range(size_t id, size_t *first, size_t *len) {
-  size_t sinks = logcie.sinks_len;
-
-  if (logcie.workers_len == 0) {
-    *first = 0;
-    *len   = sinks;
-    return;
-  }
-
-  size_t base = sinks / logcie.workers_len;
-  size_t rem  = sinks % logcie.workers_len;
-
-  *first = id * base + (id < rem ? id : rem);
-  *len   = base + (id < rem ? 1 : 0);
-}
-
-#endif  // LOGCIE_NO_THREADS
-
-// NOTE: a worker takes no lock. It owns its share exclusively and the partition
-// only changes while every queue is drained.
-static void logcie_run_range(Logcie_Log log, size_t first, size_t len) {
-  for (size_t i = first; i < first + len; i++) {
-    Logcie_Sink *sink = logcie.sinks[i];
-
-    if (sink == NULL || sink->formatter.format == NULL) {
-      continue;
-    }
-
-    if (sink->filter.filter && !sink->filter.filter(sink->filter.data, &log)) {
-      continue;
-    }
-
-    sink->formatter.format(&sink->writer, sink->formatter.data, log);
-
-    if (log.level >= LOGCIE_AUTOFLUSH_LEVEL && sink->writer.flush) {
-      sink->writer.flush(sink->writer.data);
-    }
-  }
-}
-
-#ifndef LOGCIE_NO_THREADS
-
-static void logcie_worker_deliver(Logcie_Worker *worker, Logcie_QueueEntry *entry, size_t id) {
-  Logcie_Log log   = entry->log;
-  size_t     first = 0;
-  size_t     len   = 0;
-
-  log.msg = logcie_queue_entry_bytes(entry);
-  logcie_worker_range(id, &first, &len);
-
-  // NOTE: a writer that logs would otherwise queue a line this worker drains
-  // straight back into the same writer.
-  logcie_log_depth++;
-  logcie_run_range(log, first, len);
-  logcie_log_depth--;
-
-  (void)worker;
-
-#ifndef LOGCIE_NO_MALLOC
-  if (entry->len >= LOGCIE_QUEUE_MESSAGE_SIZE) {
-    LOGCIE_FREE(entry->msg.heap);
-  }
-#endif
-}
-
-static LOGCIE_THREAD_RESULT logcie_worker_main(void *arg) {
-  size_t         id     = (size_t)(uintptr_t)arg;
-  Logcie_Worker *worker = &logcie_workers[id];
-
-  for (;;) {
-    LOGCIE_MUTEX_LOCK(worker->lock);
-
-    while (worker->running && worker->queue->head == LOGCIE_INTERNAL_QUEUE_NIL) {
-      // NOTE: announced before sleeping, or a drainer arriving at an already
-      // empty queue waits for work that never comes.
-      LOGCIE_SIGNAL_WAKE(worker->idle);
-      LOGCIE_SIGNAL_WAIT(worker->wake, worker->lock);
-    }
-
-    Logcie_QueueEntry entry;
-    uint8_t           got     = logcie_queue_pop(worker->queue, &entry);
-    uint8_t           running = worker->running;
-
-    LOGCIE_MUTEX_UNLOCK(worker->lock);
-
-    if (!got) {
-      if (!running) {
-        break;
-      }
-
-      continue;
-    }
-
-    logcie_worker_deliver(worker, &entry, id);
-
-    LOGCIE_MUTEX_LOCK(worker->lock);
-    worker->processed++;
-
-    if (worker->pushed == worker->processed) {
-      LOGCIE_SIGNAL_WAKE(worker->idle);
-    }
-
-    LOGCIE_MUTEX_UNLOCK(worker->lock);
-  }
-
-  LOGCIE_THREAD_DONE;
-}
-
-// NOTE: pushed minus processed is exactly "accepted but not written yet",
-// covering both entries still queued and one already popped.
-static void logcie_workers_drain(void) {
-  for (size_t i = 0; i < logcie.workers_len; i++) {
-    Logcie_Worker *worker = &logcie_workers[i];
-
-    LOGCIE_MUTEX_LOCK(worker->lock);
-
-    while (worker->pushed != worker->processed) {
-      LOGCIE_SIGNAL_WAKE(worker->wake);
-      LOGCIE_SIGNAL_WAIT(worker->idle, worker->lock);
-    }
-
-    LOGCIE_MUTEX_UNLOCK(worker->lock);
-  }
-}
-
-// NOTE: the count retires before anything is destroyed, so a producer that has
-// read it cannot still be about to use a lock this is tearing down.
-static void logcie_workers_stop(size_t running) {
-  LOGCIE_MUTEX_LOCK(logcie_mutex);
-  logcie.workers_len = 0;
-  LOGCIE_MUTEX_UNLOCK(logcie_mutex);
-
-  for (size_t i = 0; i < running; i++) {
-    LOGCIE_MUTEX_LOCK(logcie_workers[i].lock);
-    logcie_workers[i].running = 0;
-    LOGCIE_SIGNAL_WAKE(logcie_workers[i].wake);
-    LOGCIE_MUTEX_UNLOCK(logcie_workers[i].lock);
-  }
-
-  for (size_t i = 0; i < running; i++) {
-    LOGCIE_THREAD_JOIN(logcie_workers[i].thread);
-    logcie.dropped += logcie_workers[i].queue->dropped;
-    logcie_queue_clear(logcie_workers[i].queue);
-
-#ifndef LOGCIE_NO_MALLOC
-    LOGCIE_FREE(logcie_workers[i].queue);
-#endif
-
-    logcie_workers[i].queue = NULL;
-    LOGCIE_SIGNAL_DESTROY(logcie_workers[i].idle);
-    LOGCIE_SIGNAL_DESTROY(logcie_workers[i].wake);
-    LOGCIE_MUTEX_DESTROY(logcie_workers[i].lock);
-  }
-}
-
-uint8_t logcie_set_threads(size_t count) {
-  if (count > LOGCIE_THREADS_BUF_LEN) {
-    return 0;
-  }
-
-  logcie_workers_drain();
-  logcie_workers_stop(logcie.workers_len);
-
-  for (size_t i = 0; i < count; i++) {
-    Logcie_Worker *worker = &logcie_workers[i];
-
-    worker->running   = 1;
-    worker->pushed    = 0;
-    worker->processed = 0;
-
-#ifdef LOGCIE_NO_MALLOC
-    worker->queue = &logcie_queue_pool[i];
-#else
-    worker->queue = (Logcie_Queue *)LOGCIE_MALLOC(sizeof(Logcie_Queue));
-
-    if (worker->queue == NULL) {
-      logcie_workers_stop(i);
-      return 0;
-    }
-#endif
-
-    logcie_queue_init(worker->queue);
-
-    LOGCIE_MUTEX_INIT(worker->lock);
-
-    if (!LOGCIE_SIGNAL_INIT(worker->wake)) {
-      LOGCIE_MUTEX_DESTROY(worker->lock);
-      logcie_workers_stop(i);
-      return 0;
-    }
-
-    if (!LOGCIE_SIGNAL_INIT(worker->idle)) {
-      LOGCIE_SIGNAL_DESTROY(worker->wake);
-      LOGCIE_MUTEX_DESTROY(worker->lock);
-      logcie_workers_stop(i);
-      return 0;
-    }
-
-    if (!LOGCIE_THREAD_START(worker->thread, logcie_worker_main, (void *)(uintptr_t)i)) {
-      LOGCIE_SIGNAL_DESTROY(worker->idle);
-      LOGCIE_SIGNAL_DESTROY(worker->wake);
-      LOGCIE_MUTEX_DESTROY(worker->lock);
-      logcie_workers_stop(i);
-      return 0;
-    }
-  }
-
-  // NOTE: published once, after every thread is up. Raising it per worker would
-  // mean a log in that window went only to the workers that already existed.
-  LOGCIE_MUTEX_LOCK(logcie_mutex);
-  logcie.workers_len = count;
-  LOGCIE_MUTEX_UNLOCK(logcie_mutex);
-  return 1;
-}
-
-// NOTE: filtering here would mean running every sink's filter on the calling
-// thread, which is the work being moved off it.
-//
-// NOTE: holds logcie_mutex, which sink registration also takes, so the
-// partition cannot change midway through a fan-out.
-static uint8_t logcie_enqueue(const Logcie_Log *log, const char *msg, size_t len) {
-  uint8_t queued = 0;
-
-  LOGCIE_MUTEX_LOCK(logcie_mutex);
-
-  for (size_t i = 0; i < logcie.workers_len; i++) {
-    size_t first = 0;
-    size_t range = 0;
-
-    logcie_worker_range(i, &first, &range);
-
-    if (range == 0) {
-      continue;
-    }
-
-    LOGCIE_MUTEX_LOCK(logcie_workers[i].lock);
-
-    size_t dropped_before = logcie_workers[i].queue->dropped;
-
-    logcie_queue_push(logcie_workers[i].queue, log, msg, len);
-    logcie_workers[i].pushed++;
-
-    // NOTE: an evicted entry is finished, just never written, so it counts as
-    // processed. Without this pushed could never be caught up to and a drain
-    // would wait forever.
-    logcie_workers[i].processed += logcie_workers[i].queue->dropped - dropped_before;
-
-    LOGCIE_SIGNAL_WAKE(logcie_workers[i].wake);
-    LOGCIE_MUTEX_UNLOCK(logcie_workers[i].lock);
-
-    queued = 1;
-  }
-
-  LOGCIE_MUTEX_UNLOCK(logcie_mutex);
-  return queued;
-}
-
-size_t logcie_get_dropped_logs_count(void) {
-  LOGCIE_MUTEX_LOCK(logcie_mutex);
-  size_t dropped = logcie.dropped;
-
-  logcie.dropped = 0;
-
-  for (size_t i = 0; i < logcie.workers_len; i++) {
-    LOGCIE_MUTEX_LOCK(logcie_workers[i].lock);
-    dropped += logcie_workers[i].queue->dropped;
-    logcie_workers[i].queue->dropped = 0;
-    LOGCIE_MUTEX_UNLOCK(logcie_workers[i].lock);
-  }
-
-  LOGCIE_MUTEX_UNLOCK(logcie_mutex);
-  return dropped;
-}
-
-#else
-
-uint8_t logcie_set_threads(size_t count) {
-  return count == 0;
-}
-
-size_t logcie_get_dropped_logs_count(void) {
-  return 0;
-}
-
-static void logcie_workers_drain(void) {}
-
-static uint8_t logcie_enqueue(const Logcie_Log *log, const char *msg, size_t len) {
-  (void)log;
-  (void)msg;
-  (void)len;
-  return 0;
-}
-
-#endif  // LOGCIE_NO_THREADS
-
 static void logcie_flush_locked(void) {
   for (size_t i = 0; i < logcie.sinks_len; i++) {
     Logcie_WriterFlushFn *flusher = logcie.sinks[i]->writer.flush;
@@ -2069,10 +1506,6 @@ static void logcie_flush_locked(void) {
 }
 
 LOGCIE_DEF void logcie_flush(void) {
-  // NOTE: queued lines have not reached a writer yet, so flushing before they
-  // drain would push nothing and look like it worked.
-  logcie_workers_drain();
-
   if (logcie_log_depth > 0) {
     // Already locked
     logcie_flush_locked();
@@ -2091,7 +1524,20 @@ static void logcie_run_sinks(Logcie_Log log) {
   LOGCIE_MUTEX_LOCK(logcie_mutex);
   logcie_log_depth++;
 
-  logcie_run_range(log, 0, logcie.sinks_len);
+  for (size_t i = 0; i < logcie.sinks_len; i++) {
+    Logcie_Sink *sink = logcie.sinks[i];
+    LOGCIE_INTERNAL_ASSERT(sink && sink->formatter.format, "Sink have no formatter");
+
+    if (sink->filter.filter && !sink->filter.filter(sink->filter.data, &log)) {
+      continue;
+    }
+
+    sink->formatter.format(&sink->writer, sink->formatter.data, log);
+
+    if (log.level >= LOGCIE_AUTOFLUSH_LEVEL && sink->writer.flush) {
+      sink->writer.flush(sink->writer.data);
+    }
+  }
 
   logcie_log_depth--;
   LOGCIE_MUTEX_UNLOCK(logcie_mutex);
@@ -2136,9 +1582,7 @@ size_t logcie_log(Logcie_Log log, const char *fmt, ...) {
     log.msg = heap_msg != NULL ? heap_msg : stack_msg;
   }
 
-  if (!logcie_enqueue(&log, log.msg, needed < sizeof(stack_msg) ? needed : strlen(log.msg))) {
-    logcie_run_sinks(log);
-  }
+  logcie_run_sinks(log);
 
 #ifdef LOGCIE_MALLOC
   if (heap_msg != NULL) {
@@ -2201,10 +1645,7 @@ LOGCIE_DEF Logcie_Log logcie_make_log(const char *module, Logcie_LogLevel level,
   } while (0)
 
 /**
- * @brief Renders the user's message into a buffer.
- *
- * Every formatter needs this and none should reimplement it: the va_list has
- * to be copied because the caller may render more than once.
+ * @brief Copies the message into a buffer.
  *
  * @return Length the message would have, which may exceed cap
  */
@@ -2288,6 +1729,12 @@ static size_t logcie_render_tokens(char *buf, size_t cap, const char *fmt, const
       case 'f': LOGCIE_INTERNAL_EMIT("%s", log->location.file ? log->location.file : ""); break;
       case 'x': LOGCIE_INTERNAL_EMIT("%u", log->location.line); break;
       case 'M': LOGCIE_INTERNAL_EMIT("%s", log->module ? log->module : ""); break;
+
+#ifdef LOGCIE_INTERNAL_THREAD_ID
+      case 'T': LOGCIE_INTERNAL_EMIT("%llu", logcie_current_thread_id()); break;
+#else
+      case 'T': break;
+#endif
 
       case 'm': {
         size_t off = needed < cap ? needed : cap;
