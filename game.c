@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <unistd.h>
 
+#define LOGCIE_MODULE "GAME"
 #define LOGCIE_IMPLEMENTATION
 #include "./deps/logcie.h"
 
@@ -20,10 +21,12 @@ void setup_logcie(void) {
     return;
   }
 
+  logcie_remove_all_sinks();
+  logcie_set_threads(1);
   static Logcie_Sink sink = {
-    .formatter = {logcie_printf_formatter, "[$L] $m"},
-    .writer    = {logcie_printf_writer, NULL},
-    .filter    = logcie_filter_level_min(LOGCIE_LEVEL_VERBOSE),
+    .formatter = {logcie_token_formatter, "[$M:$L] $m"},
+    .writer    = {logcie_file_writer, logcie_file_flush, NULL},
+    .filter    = logcie_filter_level_min(LOGCIE_LEVEL_DEBUG),
   };
 
   sink.writer.data = log_file;
@@ -357,6 +360,55 @@ static MouseBrush mouse_brush = {
 
 // ==============================
 
+typedef struct FpsOverlay {
+  Object   header;
+  uint64_t accum_ms;
+  uint32_t frame_count;
+  uint32_t fps;
+} FpsOverlay;
+
+void draw_fps_overlay(Object *obj, uint64_t delta_ms) {
+  FpsOverlay *fps = (FpsOverlay *)obj;
+
+  fps->accum_ms += delta_ms;
+  fps->frame_count += 1;
+
+  if (fps->accum_ms >= 1000) {
+    fps->fps         = (uint32_t)((fps->frame_count * 1000) / fps->accum_ms);
+    fps->frame_count = 0;
+    fps->accum_ms    = 0;
+  }
+
+  char buf[64];
+  int  len = snprintf(buf, sizeof(buf), "FPS: %u  dt: %lu ms", fps->fps, delta_ms);
+
+  LOGCIE_DEBUG("FPS: %u, dt: %lu ms", fps->fps, delta_ms);
+
+  if (len > sogel_get_width()) {
+    len = sogel_get_width();
+  }
+
+  uint16_t x = 0;
+  uint16_t y = sogel_get_height() - 2;
+
+  memcpy(sogel_at(x, y), buf, len);
+}
+
+static FpsOverlay fps_overlay = {
+  .header = {
+    .x      = 0,
+    .y      = 0,
+    .draw   = draw_fps_overlay,
+    .update = NULL,
+  },
+  .accum_ms    = 0,
+  .frame_count = 0,
+  .fps         = 0,
+};
+
+// ==============================
+
+
 static bool run = true;
 
 void intHandler(int dummy) {
@@ -376,6 +428,7 @@ int main(void) {
   sogel_add_object(&scrolling_text.header);
   sogel_add_object(&counter.header);
   sogel_add_object(&man_hello.header);
+  sogel_add_object(&fps_overlay.header);
 
   while (run) {
     sogel_clear();
@@ -414,6 +467,8 @@ int main(void) {
 
   sogel_show_cursor();
   sogel_deinit();
+
+  logcie_flush();
 
   if (log_file) {
     fclose(log_file);
