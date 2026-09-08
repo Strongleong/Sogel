@@ -265,6 +265,7 @@ SOGEL_DEF void     sogel_deinit(void);
 SOGEL_DEF void     sogel_set_fps(uint32_t fps);
 SOGEL_DEF uint32_t sogel_get_fps(void);
 SOGEL_DEF uint64_t sogel_get_frame_delay_us(void);
+SOGEL_DEF uint64_t sogel_get_frame_delta_ms(void);
 SOGEL_DEF void     sogel_set_size(uint16_t width, uint16_t height);
 SOGEL_DEF uint16_t sogel_get_width(void);
 SOGEL_DEF uint16_t sogel_get_height(void);
@@ -654,6 +655,10 @@ SOGEL_DEF uint32_t sogel_get_fps(void) {
 
 SOGEL_DEF uint64_t sogel_get_frame_delay_us(void) {
   return sogel_frame_delay_us;
+}
+
+SOGEL_DEF uint64_t sogel_get_frame_delta_ms(void) {
+  return sogel_frame_delta_ms;
 }
 
 SOGEL_DEF void sogel_set_size(uint16_t width, uint16_t height) {
